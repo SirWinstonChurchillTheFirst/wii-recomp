@@ -13,6 +13,7 @@
 #include "drive.h"
 #include "ios.h"
 #include "profile.h"
+#include "gaps.h"
 #include "remote_link.h"
 #include "title.h"
 
@@ -150,10 +151,24 @@ void console_restart(uint64_t start) {
 
 void console_remember(char **arguments) { started_with = arguments; }
 
+// What the program keeps is written here, by name, and the program then ends at once:
+// exit() would also take apart the graphics driver and the window system while the
+// commands thread and the window still use them, which crashed on Linux after
+// everything was saved.
+#ifdef GX_WITH_VULKAN
+void gx_vulkan_save_cache(void);
+#endif
 void console_power_off(const char *how) {
   fprintf(stderr, "console: turning %s\n", how);
   files_save_all();
-  exit(0);
+  profile_save();
+  gap_flush();
+#ifdef GX_WITH_VULKAN
+  gx_vulkan_save_cache();
+#endif
+  fflush(stdout);
+  fflush(stderr);
+  _exit(0);
 }
 
 void console_hot_reset(void) {

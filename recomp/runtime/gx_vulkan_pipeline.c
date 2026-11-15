@@ -215,6 +215,9 @@ static void *keep_saving(void *unused) {
   return 0;
 }
 
+// For the console's power-off, which ends the program without exit handlers.
+void gx_vulkan_save_cache(void) { if (cache_folder[0]) save_driver_cache(); }
+
 static void open_cache(void) {
   const char *folder = getenv("WII_RECOMP_SHADER_CACHE");
   const char *off = getenv("WII_RECOMP_NO_SHADER_CACHE");
