@@ -1,6 +1,7 @@
 // Loads the game into guest memory.
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "cpu.h"
 #include "drive.h"
@@ -129,6 +130,8 @@ void set_up_low_memory(const Boot *boot) {
   wr32(0x80000024, 1);
   wr32(0x80000028, MEM1_SIZE);
   wr32(0x8000002c, 0x23);         // Retail console.
+  uint8_t settings[0x100];
+  if (console_settings_raw(settings)) memcpy(host(0x80003800u), settings, sizeof settings);  // As the system menu leaves it.
   // The TV standard, which the system menu leaves here from the console's settings and
   // the SDK's VIInit and VIConfigure hold a game to: 0 is NTSC, 1 PAL, 5 EuRGB60 (a PAL
   // console set to 60 Hz, IPL.E60). A console's own setting.txt says which (VIDEO);
@@ -142,7 +145,7 @@ void set_up_low_memory(const Boot *boot) {
   if (console_setting("VIDEO", video, sizeof video)) pal = !strcmp(video, "PAL");
   files_system_setting("IPL.E60", &sixty, 1);
   if (pal && !sixty) fprintf(stderr, "vi: a PAL console at 50 Hz isn't modelled; EuRGB60 is given\n");
-  wr32(0x800000cc, pal ? 5 : 0);
+  wr32(0x800000cc, pal ? 1 : 0);  // PAL, as Dolphin's boot fakes the IPL's VIInit; 60 Hz comes from IPL.E60.
   // The system menu also leaves the video interface running. VIInit, finding it off,
   // starts it as NTSC and writes 0 over the word above, so for a PAL game it's left as the
   // menu's own VIInit would have it: switched on (the control register's low bit), and
@@ -186,4 +189,8 @@ void set_up_low_memory(const Boot *boot) {
     wr32(0x8000314c, mem2_end + 0x20000u);
   }
   wr32(0x80003188, ios_version());       // The version the game asked to run on.
+  // The game's code, the disc ID's first four letters, which the apploader leaves here
+  // (Dolphin's Boot_BS2Emu.cpp copies it from 0x80000000). Mario Party 9 reads its region
+  // from it and stops with "Region Error!" on zeros.
+  memcpy(host(0x80003180u), boot->header, 4);
 }

@@ -52,6 +52,9 @@ void ps_store(uint32_t address, int w, int gqr, int rs);
 void save_context(void);
 void load_context(void);
 void enter_exception(uint32_t kind, uint32_t handler);
+// The game's setjmp and longjmp, as host context switches (threads.c).
+void guest_setjmp(void);
+void guest_longjmp(void);
 
 // Interrupts (interrupts.c). Translated code counts down and checks in here.
 #ifdef _WIN32

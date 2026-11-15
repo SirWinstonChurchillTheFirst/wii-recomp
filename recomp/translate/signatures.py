@@ -163,7 +163,9 @@ def find_one(finder, entry, found):
     matches = finder.exact(entry["hashes"])
     if len(matches) == 1 or (matches and entry.get("every_copy")):
         return matches[0]
-    return None if matches else finder.similar(entry["hashes"])
+    if matches or entry.get("exact_only"):  # Too like other functions to be found by resemblance.
+        return None
+    return finder.similar(entry["hashes"])
 
 
 LOAD_WORD, COMPARE_IMMEDIATE, BRANCH_CONDITIONAL = 32, 11, 16

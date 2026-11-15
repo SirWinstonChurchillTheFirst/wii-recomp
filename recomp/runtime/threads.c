@@ -312,81 +312,86 @@ void load_context(void) {
 #ifdef RECORDS_CALLER
 void save_context_recorded(const CallerRegisters *caller);
 
-// Returns 0 the first time, and 1 when something loads this context again.
+// A stub that records its caller's registers (CallerRegisters) and hands them to
+// `recorded`. Returns 0 the first time, and 1 when something loads this context again.
 #if defined(_WIN32) && defined(__x86_64__)
 // On entry the return address is at the stack pointer. 312 bytes hold the 32 the callee
 // may use, the record, and 8 to keep the stack 16-aligned for the call.
-__attribute__((naked)) void save_context(void) {
-  __asm__(
-      "subq $312, %rsp\n"
-      "movq %rbx, 32(%rsp)\n"
-      "movq %rbp, 40(%rsp)\n"
-      "movq %rdi, 48(%rsp)\n"
-      "movq %rsi, 56(%rsp)\n"
-      "movq %r12, 64(%rsp)\n"
-      "movq %r13, 72(%rsp)\n"
-      "movq %r14, 80(%rsp)\n"
-      "movq %r15, 88(%rsp)\n"
-      "movq 312(%rsp), %rax\n"
-      "movq %rax, 96(%rsp)\n"
-      "leaq 320(%rsp), %rax\n"
-      "movq %rax, 104(%rsp)\n"
-      "movq %gs:0x8, %rax\n"
-      "movq %rax, 112(%rsp)\n"
-      "movq %gs:0x10, %rax\n"
-      "movq %rax, 120(%rsp)\n"
-      "movq %gs:0x1478, %rax\n"
-      "movq %rax, 128(%rsp)\n"
-      XMM_SAVE(144, "%rsp")
-      "leaq 32(%rsp), %rcx\n"
-      "call save_context_recorded\n"
-      "addq $312, %rsp\n"
-      "ret\n");
+#define RECORDING_STUB(name, recorded) \
+__attribute__((naked)) void name(void) { \
+  __asm__( \
+      "subq $312, %rsp\n" \
+      "movq %rbx, 32(%rsp)\n" \
+      "movq %rbp, 40(%rsp)\n" \
+      "movq %rdi, 48(%rsp)\n" \
+      "movq %rsi, 56(%rsp)\n" \
+      "movq %r12, 64(%rsp)\n" \
+      "movq %r13, 72(%rsp)\n" \
+      "movq %r14, 80(%rsp)\n" \
+      "movq %r15, 88(%rsp)\n" \
+      "movq 312(%rsp), %rax\n" \
+      "movq %rax, 96(%rsp)\n" \
+      "leaq 320(%rsp), %rax\n" \
+      "movq %rax, 104(%rsp)\n" \
+      "movq %gs:0x8, %rax\n" \
+      "movq %rax, 112(%rsp)\n" \
+      "movq %gs:0x10, %rax\n" \
+      "movq %rax, 120(%rsp)\n" \
+      "movq %gs:0x1478, %rax\n" \
+      "movq %rax, 128(%rsp)\n" \
+      XMM_SAVE(144, "%rsp") \
+      "leaq 32(%rsp), %rcx\n" \
+      "call " #recorded "\n" \
+      "addq $312, %rsp\n" \
+      "ret\n"); \
 }
 #elif defined(__x86_64__)
 // On entry the return address is at the stack pointer, and the caller's stack is 8 above.
 // 72 bytes keep the stack 16-aligned for the call.
-__attribute__((naked)) void save_context(void) {
-  __asm__(
-      "subq $72, %rsp\n"
-      "movq %rbx, 0(%rsp)\n"
-      "movq %rbp, 8(%rsp)\n"
-      "movq %r12, 16(%rsp)\n"
-      "movq %r13, 24(%rsp)\n"
-      "movq %r14, 32(%rsp)\n"
-      "movq %r15, 40(%rsp)\n"
-      "movq 72(%rsp), %rax\n"
-      "movq %rax, 48(%rsp)\n"
-      "leaq 80(%rsp), %rax\n"
-      "movq %rax, 56(%rsp)\n"
-      "movq %rsp, %rdi\n"
-      "call " SYMBOL(__USER_LABEL_PREFIX__, save_context_recorded) "\n"
-      "addq $72, %rsp\n"
-      "ret\n");
+#define RECORDING_STUB(name, recorded) \
+__attribute__((naked)) void name(void) { \
+  __asm__( \
+      "subq $72, %rsp\n" \
+      "movq %rbx, 0(%rsp)\n" \
+      "movq %rbp, 8(%rsp)\n" \
+      "movq %r12, 16(%rsp)\n" \
+      "movq %r13, 24(%rsp)\n" \
+      "movq %r14, 32(%rsp)\n" \
+      "movq %r15, 40(%rsp)\n" \
+      "movq 72(%rsp), %rax\n" \
+      "movq %rax, 48(%rsp)\n" \
+      "leaq 80(%rsp), %rax\n" \
+      "movq %rax, 56(%rsp)\n" \
+      "movq %rsp, %rdi\n" \
+      "call " SYMBOL(__USER_LABEL_PREFIX__, recorded) "\n" \
+      "addq $72, %rsp\n" \
+      "ret\n"); \
 }
 #else
-__attribute__((naked)) void save_context(void) {
-  __asm__(
-      "sub sp, sp, #176\n"
-      "stp x19, x20, [sp, #0]\n"
-      "stp x21, x22, [sp, #16]\n"
-      "stp x23, x24, [sp, #32]\n"
-      "stp x25, x26, [sp, #48]\n"
-      "stp x27, x28, [sp, #64]\n"
-      "stp x29, x30, [sp, #80]\n"
-      "add x9, sp, #176\n"
-      "str x9, [sp, #96]\n"
-      "stp d8, d9, [sp, #104]\n"
-      "stp d10, d11, [sp, #120]\n"
-      "stp d12, d13, [sp, #136]\n"
-      "stp d14, d15, [sp, #152]\n"
-      "mov x0, sp\n"
-      "bl " SYMBOL(__USER_LABEL_PREFIX__, save_context_recorded) "\n"
-      "ldp x29, x30, [sp, #80]\n"
-      "add sp, sp, #176\n"
-      "ret\n");
+#define RECORDING_STUB(name, recorded) \
+__attribute__((naked)) void name(void) { \
+  __asm__( \
+      "sub sp, sp, #176\n" \
+      "stp x19, x20, [sp, #0]\n" \
+      "stp x21, x22, [sp, #16]\n" \
+      "stp x23, x24, [sp, #32]\n" \
+      "stp x25, x26, [sp, #48]\n" \
+      "stp x27, x28, [sp, #64]\n" \
+      "stp x29, x30, [sp, #80]\n" \
+      "add x9, sp, #176\n" \
+      "str x9, [sp, #96]\n" \
+      "stp d8, d9, [sp, #104]\n" \
+      "stp d10, d11, [sp, #120]\n" \
+      "stp d12, d13, [sp, #136]\n" \
+      "stp d14, d15, [sp, #152]\n" \
+      "mov x0, sp\n" \
+      "bl " SYMBOL(__USER_LABEL_PREFIX__, recorded) "\n" \
+      "ldp x29, x30, [sp, #80]\n" \
+      "add sp, sp, #176\n" \
+      "ret\n"); \
 }
 #endif
+RECORDING_STUB(save_context, save_context_recorded)
 
 void save_context_recorded(const CallerRegisters *caller) {
   uint32_t c = cpu.r[3], return_pc = cpu.lr;
@@ -419,6 +424,85 @@ void save_context(void) {
   getcontext(&slot->host);
   if (slot->resumed) return;
   cpu.r[3] = 0;
+}
+#endif
+
+// The game's own setjmp and longjmp: the C library's, saving the link register, the
+// condition register, r1, r2, r13 to r31, f14 to f31 with their second paired-single
+// value, and the FPSCR (offsets below, as the game's code lays them out). Games use them
+// as coroutines, as Mario Party's process system does: a process's buffer is filled in by
+// hand with a new stack and its function, and longjmp starts it. Translated code returns
+// rather than jumps, so a longjmp into another stack must become a host context switch,
+// exactly as OSLoadContext's is: setjmp records its caller's host registers too, and
+// longjmp either returns to them, or starts the function on a host stack of its own.
+enum { JUMP_LR = 0, JUMP_CR = 4, JUMP_SP = 8, JUMP_R2 = 12, JUMP_R13 = 20, JUMP_FPR = 96, JUMP_FPSCR = 384, MAX_JUMPS = 1024 };
+static Slot jump_slots[MAX_JUMPS];
+
+static Slot *jump_slot_for(uint32_t buffer) {
+  for (int i = 0; i < MAX_JUMPS; i++) {
+    if (jump_slots[i].guest == buffer) return &jump_slots[i];
+    if (!jump_slots[i].guest) {
+      jump_slots[i].guest = buffer;
+      return &jump_slots[i];
+    }
+  }
+  fprintf(stderr, "stop: too many setjmp buffers\n");
+  exit(5);
+}
+
+static void write_jump_buffer(uint32_t b) {
+  wr32(b + JUMP_LR, cpu.lr);
+  wr32(b + JUMP_CR, condition_bits());
+  wr32(b + JUMP_SP, cpu.r[1]);
+  wr32(b + JUMP_R2, cpu.r[2]);
+  for (int i = 13; i < 32; i++) wr32(b + JUMP_R13 + (i - 13) * 4, cpu.r[i]);
+  for (int i = 14; i < 32; i++) {
+    wr64(b + JUMP_FPR + (i - 14) * 16, double_bits(cpu.f[i]));
+    ps_store(b + JUMP_FPR + (i - 14) * 16 + 8, 0, 0, i);  // psq_st with GQR 0: both values as singles.
+  }
+  wr64(b + JUMP_FPSCR, double_bits(fpscr_as_double()));
+}
+
+static void read_jump_buffer(uint32_t b) {
+  cpu.lr = rd32(b + JUMP_LR);
+  uint32_t cr = rd32(b + JUMP_CR);
+  for (int i = 0; i < 8; i++) cpu.cr[i] = (cr >> (28 - i * 4)) & 15;
+  cpu.r[1] = rd32(b + JUMP_SP);
+  cpu.r[2] = rd32(b + JUMP_R2);
+  for (int i = 13; i < 32; i++) cpu.r[i] = rd32(b + JUMP_R13 + (i - 13) * 4);
+  for (int i = 14; i < 32; i++) {
+    cpu.f[i] = as_double(rd64(b + JUMP_FPR + (i - 14) * 16));
+    ps_load(b + JUMP_FPR + (i - 14) * 16 + 8, 0, 0, i);
+  }
+  fpscr_write_fields(255, (uint32_t)rd64(b + JUMP_FPSCR));
+}
+
+#ifdef RECORDS_CALLER
+void guest_setjmp_recorded(const CallerRegisters *caller);
+RECORDING_STUB(guest_setjmp, guest_setjmp_recorded)
+
+void guest_setjmp_recorded(const CallerRegisters *caller) {
+  uint32_t b = cpu.r[3];
+  write_jump_buffer(b);
+  record("setjmp", b, cpu.lr);
+  Slot *slot = jump_slot_for(b);
+  slot->resume_pc = cpu.lr;
+  slot->resume_stack = cpu.r[1];
+  slot->caller = *caller;
+  slot->use_caller = 1;
+  cpu.r[3] = 0;
+}
+
+void guest_longjmp(void) {
+  uint32_t b = cpu.r[3], value = cpu.r[4];
+  read_jump_buffer(b);
+  cpu.r[3] = value ? value : 1;
+  record("longjmp", b, cpu.lr);
+  Slot *slot = jump_slot_for(b);
+  if (slot->use_caller && slot->resume_pc == cpu.lr && slot->resume_stack == cpu.r[1]) return_to_caller(&slot->caller);
+  // Filled in by hand: the function in the link register starts on a stack of its own.
+  slot->use_caller = 0;
+  start_fresh(slot, cpu.lr);
 }
 #endif
 

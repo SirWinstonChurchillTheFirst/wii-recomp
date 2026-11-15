@@ -653,6 +653,8 @@ void gx_stream_report(void) {
   fprintf(stderr, "stream: %u bytes waiting, control %x, read %x, write %x, cpu write %x:", stream_used,
           hw_peek(CP_CONTROL, 2), read_pair(CP_FIFO_READ), read_pair(CP_FIFO_WRITE), hw_peek(PI_FIFO_WRITE, 4));
   for (uint32_t i = 0; i < 24 && i < stream_used; i++) fprintf(stderr, " %02x", stream[i]);
+  fprintf(stderr, "\n  the CPU's write pipe holds %u bytes not yet sent:", burst_used);
+  for (uint32_t i = 0; i < burst_used; i++) fprintf(stderr, " %02x", burst[i]);
   fprintf(stderr, "\n  vertex format %x %x, needs %u for one vertex of format 0\n", gx.cp[0x50], gx.cp[0x60], gx_vertices_size(0, 1));
 }
 

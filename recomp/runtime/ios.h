@@ -43,6 +43,8 @@ int aes_request(uint32_t command, uint32_t request);
 int sha_request(uint32_t command, uint32_t request);
 void wc24_request_user_id(uint8_t *out);
 int console_setting(const char *name, char *out, size_t limit);  // From setting.txt; 0 if it isn't there.
+void console_settings_make(char region);  // setting.txt for the disc's region letter, unless storage has one.
+int console_settings_raw(uint8_t *out);   // Its 256 bytes as stored, or 0.
 // The disc's ticket, beside the extracted system folder. Returns 0 if there's none.
 
 void files_start(const char *folder);

@@ -783,9 +783,19 @@ def title_description(program_bytes, tmd, values, function_count, module_count, 
             "};\n")
 
 
-# Each module's code stands in at MODULE_BASE + n * MODULE_SPACING, and its imports 16 MiB
-# after that, within a branch's reach of all its code.
-MODULE_BASE, MODULE_IMPORTS, MODULE_SPACING = 0xc0000000, 0xc1000000, 0x02000000
+# Each module's code stands in from MODULE_BASE on, one after another, with its imports
+# just after its code, within a branch's reach of all of it. Mario Party 9 has 115 modules,
+# 47 MiB of code, which a fixed 32 MiB each would take far past 32 bits.
+MODULE_BASE, MODULE_ALIGN = 0xc0000000, 0x10000
+
+
+def align_up(value, step):
+    return (value + step - 1) // step * step
+
+
+def module_imports_at(module, base):
+    """Where a module's import stand-ins start when its code stands in at `base`."""
+    return align_up(base + module.sections[module.code_section()][1], MODULE_ALIGN)
 
 
 def export_addresses(system, functions):
@@ -826,13 +836,16 @@ def title_modules(system):
     files = system.parent / "files"
     if files.is_dir():
         for path in sorted(files.rglob("*")):
-            if path.is_file() and MODULE_FILE.search(path.name):
+            if path.is_file() and (MODULE_FILE.search(path.name) or path.parent.name.lower() in MODULE_FOLDERS):
                 found += [(str(path.relative_to(files)), module) for module in modules.find_modules([(path.name, path.read_bytes())])
                           if module.kind == "rel"]
     return [(name, module) for name, module in found if module]
 
 
 # A file that holds modules: a .rel or .rso, or an archive of them (RELS.arc and the like).
+# A folder whose files are modules whatever they're called, such as Super Paper Mario's
+# rel/rel.bin. Only files that read as a REL are taken from it.
+MODULE_FOLDERS = {"rel", "rels", "module", "modules"}
 MODULE_FILE = re.compile(r"\.(rel|rso)(\.[a-z0-9]+)?$|^rels?\b.*\.(arc|szs)$", re.IGNORECASE)
 
 
@@ -863,7 +876,7 @@ def links_between(found):
     return starts
 
 
-def emit_module(module, number, out, exports, program_starts, counts, extra_starts=()):
+def emit_module(module, number, base, out, exports, program_starts, counts, extra_starts=()):
     """Translates a run-time-loaded module's code into native functions, wherever it is
     loaded. Writes m<number>_*.c and returns the C for its entry in the module table, or
     None if the module can't be prepared, which leaves it to the interpreter.
@@ -872,7 +885,7 @@ def emit_module(module, number, out, exports, program_starts, counts, extra_star
     runs: functions that did the work compile for speed, the rest quickly, counting runs
     into m<number>_counts."""
     global MODULE
-    base, imports = MODULE_BASE + number * MODULE_SPACING, MODULE_IMPORTS + number * MODULE_SPACING
+    imports = module_imports_at(module, base)
     try:
         prepared = modules.prepare(module, base, imports, extra_starts)
     except modules.Unsupported as reason:
@@ -954,11 +967,23 @@ def write_modules(found, out, exports, program_starts, module_counts=None):
     """Every module the title loads at run time as native code, where it can be prepared.
     `module_counts` is {module name: {offset: runs}} when building in two tiers."""
     prefixes = []
+    base = MODULE_BASE
     between = links_between(found)
     for number, (_, module) in enumerate(found):
         counts = None if module_counts is None else module_counts.get(module.name, {})
         extra = between.get(module.module_id, ()) if module.kind == "rel" else ()
-        prefix = emit_module(module, number, out, exports, program_starts, counts, extra)
+        try:
+            imports = module_imports_at(module, base)
+        except modules.Unsupported as reason:
+            print(f"{module.name}: left to the interpreter, {reason}")
+            imports = base
+        prefix = emit_module(module, number, base, out, exports, program_starts, counts, extra)
+        # Room for every import stand-in: the module's own, and one per program or module
+        # function it branches to, which is at most one per relocation.
+        stand_ins = len(module.imports) + len(module.fixed) + len(module.external)
+        base = align_up(imports + 4 * stand_ins, MODULE_ALIGN) + MODULE_ALIGN
+        if base >= 0xfff00000:
+            raise SystemExit("the modules' code doesn't fit in the stand-in space")
         if prefix is None:
             for stale in out.glob(f"m{number}_*"):
                 stale.unlink()

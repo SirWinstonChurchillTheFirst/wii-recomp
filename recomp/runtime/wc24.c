@@ -60,6 +60,48 @@ int console_setting(const char *name, char *out, size_t limit) {
   return 0;
 }
 
+// setting.txt's scrambling: each byte against a key that turns one bit a byte. The same
+// step undoes it.
+static void scramble_settings(uint8_t *data) {
+  uint32_t key = 0x73b5dbfa;
+  for (int i = 0; i < SETTINGS_BYTES; i++) {
+    data[i] ^= (uint8_t)key;
+    key = key >> 31 | key << 1;
+  }
+}
+
+// A console of the disc's own region, as Dolphin's boot makes setting.txt for it
+// (Boot_BS2Emu.cpp, SetupWiiMemory): games check AREA, GAME and VIDEO against the disc,
+// and Mario Party 9 stops with "Region Error!" when the file isn't there. A Wii storage
+// folder with its own copy keeps it; otherwise the save folder's copy is written for each
+// disc, so a console started with a US disc after a European one becomes a US console.
+void console_settings_make(char region) {
+  static const struct { char letters[12]; const char *area, *video, *game, *code, *model; } regions[] = {
+    {"EN", "USA", "NTSC", "US", "LU", "RVL-001(USA)"},
+    {"JW", "JPN", "NTSC", "JP", "LJ", "RVL-001(JPN)"},
+    {"KQT", "KOR", "NTSC", "KR", "LKH", "RVL-001(KOR)"},
+    {"", "EUR", "PAL", "EU", "LEH", "RVL-001(EUR)"},  // Every other letter: the PAL countries.
+  };
+  char storage[MAX_PATH];
+  FILE *own = files_storage_path(SETTINGS_PATH, storage, sizeof storage) ? fopen(storage, "rb") : 0;
+  if (own) {
+    fclose(own);
+    return;
+  }
+  size_t chosen = 3;
+  for (size_t i = 0; i < 3; i++) if (region && strchr(regions[i].letters, region)) chosen = i;
+  uint8_t data[SETTINGS_BYTES] = {0};
+  snprintf((char *)data, sizeof data, "AREA=%s\r\nMODEL=%s\r\nDVD=0\r\nMPCH=0x7FFE\r\nCODE=%s\r\nSERNO=000000000\r\nVIDEO=%s\r\nGAME=%s\r\n",
+           regions[chosen].area, regions[chosen].model, regions[chosen].code, regions[chosen].video, regions[chosen].game);
+  scramble_settings(data);
+  uint8_t before[SETTINGS_BYTES];
+  if (read_file(SETTINGS_PATH, before, SETTINGS_BYTES) && !memcmp(before, data, SETTINGS_BYTES)) return;
+  if (write_file(SETTINGS_PATH, data, SETTINGS_BYTES)) fprintf(stderr, "storage: setting.txt made for a %s console\n", regions[chosen].area);
+}
+
+// The file as the system menu leaves it in memory at 0x80003800, still scrambled.
+int console_settings_raw(uint8_t *out) { return read_file(SETTINGS_PATH, out, SETTINGS_BYTES); }
+
 static uint8_t area_code(const char *area) {
   static const struct { const char *name; uint8_t code; } areas[] = {
     {"JPN", 0}, {"USA", 1}, {"EUR", 2}, {"AUS", 2}, {"BRA", 1}, {"TWN", 3}, {"ROC", 3},
