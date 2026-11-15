@@ -112,8 +112,11 @@ static void stay_awake(void) {
 void window_create(void) {
 #ifdef GX_WITH_VULKAN
   // GLFW looks for the Vulkan loader on its own, and on the Mac it doesn't find
-  // Homebrew's, so it's handed the one the console is linked with.
+  // Homebrew's, so it's handed the one the console is linked with. GLFW 3.3, which
+  // Ubuntu 24.04 still ships, has no such call and finds the system's loader itself.
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
   glfwInitVulkanLoader(vkGetInstanceProcAddr);
+#endif
 #endif
   if (!glfwInit()) { fprintf(stderr, "stop: no window system\n"); exit(10); }
   stay_awake();
