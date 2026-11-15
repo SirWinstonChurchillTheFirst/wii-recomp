@@ -4,6 +4,8 @@
 
 #include "cpu.h"
 #include "drive.h"
+#include "hardware.h"
+#include "ios.h"
 #include "title.h"
 #include "loader.h"
 #include "titles.h"
@@ -127,6 +129,33 @@ void set_up_low_memory(const Boot *boot) {
   wr32(0x80000024, 1);
   wr32(0x80000028, MEM1_SIZE);
   wr32(0x8000002c, 0x23);         // Retail console.
+  // The TV standard, which the system menu leaves here from the console's settings and
+  // the SDK's VIInit and VIConfigure hold a game to: 0 is NTSC, 1 PAL, 5 EuRGB60 (a PAL
+  // console set to 60 Hz, IPL.E60). A console's own setting.txt says which (VIDEO);
+  // without one it follows the disc's region letter, as Dolphin's boot does. Left at
+  // NTSC, VIConfigure stops a PAL game that asks for a PAL or EuRGB60 mode. The video
+  // registers themselves stay as they are: an EuRGB60 console's say NTSC timing, which is
+  // what VIInit expects to find beside the 5 here.
+  char video[8];
+  uint8_t sixty = 1;
+  int pal = !strchr("EJKW", (char)boot->header[3]);
+  if (console_setting("VIDEO", video, sizeof video)) pal = !strcmp(video, "PAL");
+  files_system_setting("IPL.E60", &sixty, 1);
+  if (pal && !sixty) fprintf(stderr, "vi: a PAL console at 50 Hz isn't modelled; EuRGB60 is given\n");
+  wr32(0x800000cc, pal ? 5 : 0);
+  // The system menu also leaves the video interface running. VIInit, finding it off,
+  // starts it as NTSC and writes 0 over the word above, so for a PAL game it's left as the
+  // menu's own VIInit would have it: switched on (the control register's low bit), and
+  // the two display interrupts enabled, one a field: the first at line 263, sample 430,
+  // the second at line 1, sample 1, which is what the SDK sets for 525-line timing and
+  // what Dolphin's VideoInterface presets. A game that waits for a retrace before it
+  // configures the picture needs them, and VIInit doesn't set them itself when it finds
+  // the interface on: with only the first, every game ran at half its frame rate.
+  if (pal) {
+    hw_write(0xcc002002u, 1, 2);
+    hw_write(0xcc002030u, (1u << 28) | (263u << 16) | 430u, 4);
+    hw_write(0xcc002034u, (1u << 28) | (1u << 16) | 1u, 4);
+  }
   wr32(0x80000030, 0);
   wr32(0x80000034, arena_high);
   wr32(0x80000038, table_address);

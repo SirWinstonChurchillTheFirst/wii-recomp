@@ -47,7 +47,8 @@ void guest_panic(void) {
   print_guest_text(cpu.r[3]);
   fprintf(stderr, " line %u: ", cpu.r[4]);
   print_guest_text(cpu.r[5]);
-  fprintf(stderr, " (called from %08x)\n", cpu.lr);
+  // The message is a printf format; its first values are here for whoever reads the log.
+  fprintf(stderr, " (called from %08x; values %x %x %x)\n", cpu.lr, cpu.r[6], cpu.r[7], cpu.r[8]);
   exit(7);
 }
 

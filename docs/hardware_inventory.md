@@ -619,6 +619,8 @@ Registers with no entry below are kept in a plain array (`hardware.c:39`), so re
 | `hw.control_busy_bit` | Control busy bit | done | `runtime/exi.c` | Transfers finish at once. |
 | `hw.status_dma_address_length_immediate_data` | Status, DMA address, length, immediate data | done | `runtime/exi.c` | Immediate and DMA transfers, both directions. Devices other than the clock chip are empty. |
 | `hw.exi_interrupt` | EXI interrupt | done | `runtime/exi.c` | Transfer done, EXI and insert interrupts, each behind its mask. |
+| `hw.ipl_rom_fonts` | Boot ROM fonts (channel 0) | done | `runtime/exi.c` | Dolphin's free western and Japanese fonts, at 0x1fcf00 and 0x1aff00, for OSInitFont. |
+| `hw.ipl_rom_code` | Boot ROM code (channel 0) | missing | `runtime/exi.c` | Reads below the fonts answer zeros and are reported. |
 | `hw.rtc_and_sram_channel_0` | RTC and SRAM (channel 0) | done | `runtime/exi.c` | The clock is local time since 2000, as the time base, less the settings' counter bias (`IPL.CB`), as in Dolphin: a Wii adds the bias, so the Wii Menu shows the computer's time whatever its date setting stored. The game can move it. SRAM holds a new Wii's settings with correct checksums. |
 | `hw.gc_memory_card` | GC memory card | on demand |  | GameCube titles only. |
 | `hw.microphone` | Microphone | on demand |  | A handful of titles. |
