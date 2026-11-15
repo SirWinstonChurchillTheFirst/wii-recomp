@@ -43,5 +43,5 @@ void dsp_record_update(uint64_t now);                    // Starts and stops rec
 extern int dsp_recording;
 void dsp_record_run(uint32_t cycles);
 void dsp_record_cpu_write(int high, uint16_t value);
-void dsp_record_read_low(int cpu, uint32_t mail);  // The mailbox as it was, full bit and all.
+void dsp_record_read_low(int cpu_side, uint32_t mail);  // The mailbox as it was, full bit and all.
 void dsp_record_control(uint16_t value);

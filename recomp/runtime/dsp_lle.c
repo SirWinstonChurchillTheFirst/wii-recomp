@@ -228,19 +228,19 @@ static void mailbox_write_high(int box, uint16_t value) {
   dsp_lle.mailbox[box] = ((dsp_lle.mailbox[box] & 0xffffu) | (uint32_t)value << 16) & ~MAIL_FULL;
 }
 
-uint16_t dsp_lle_mailbox_read_high(int cpu) { return mailbox_read_high(cpu ? MAILBOX_CPU : MAILBOX_DSP); }
-uint16_t dsp_lle_mailbox_read_low(int cpu) { return mailbox_read_low(cpu ? MAILBOX_CPU : MAILBOX_DSP); }
-uint32_t dsp_lle_mailbox_peek(int cpu) { return dsp_lle.mailbox[cpu ? MAILBOX_CPU : MAILBOX_DSP]; }
+uint16_t dsp_lle_mailbox_read_high(int cpu_side) { return mailbox_read_high(cpu_side ? MAILBOX_CPU : MAILBOX_DSP); }
+uint16_t dsp_lle_mailbox_read_low(int cpu_side) { return mailbox_read_low(cpu_side ? MAILBOX_CPU : MAILBOX_DSP); }
+uint32_t dsp_lle_mailbox_peek(int cpu_side) { return dsp_lle.mailbox[cpu_side ? MAILBOX_CPU : MAILBOX_DSP]; }
 
 // Only the CPU's mailbox takes writes from the CPU. A write while it's full is allowed (Dolphin
 // warns: the program didn't read the last one).
-void dsp_lle_mailbox_write_high(int cpu, uint16_t value) {
-  if (cpu) mailbox_write_high(MAILBOX_CPU, value);
+void dsp_lle_mailbox_write_high(int cpu_side, uint16_t value) {
+  if (cpu_side) mailbox_write_high(MAILBOX_CPU, value);
   else gap_hit("hw.mail_from_dsp", value);
 }
 
-void dsp_lle_mailbox_write_low(int cpu, uint16_t value) {
-  if (cpu) mailbox_write_low(MAILBOX_CPU, value);
+void dsp_lle_mailbox_write_low(int cpu_side, uint16_t value) {
+  if (cpu_side) mailbox_write_low(MAILBOX_CPU, value);
   else gap_hit("hw.mail_from_dsp", value);
 }
 

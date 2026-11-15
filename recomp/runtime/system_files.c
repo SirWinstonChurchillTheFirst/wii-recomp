@@ -249,4 +249,12 @@ void system_files_make(void) {
     }
     free(data);
   }
+  // A formatted Wii always has /tmp, where the NAND library builds a file (in /tmp/sys)
+  // before moving it into place. Without it no game can make its first save.
+  char full[MAX_PATH];
+  if (!files_find("/tmp", full, sizeof full)) {
+    files_save_path("/tmp/.", full, sizeof full);
+    files_make_parents(full);
+    fprintf(stderr, "storage: made a new /tmp, as a formatted Wii has\n");
+  }
 }

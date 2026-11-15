@@ -32,7 +32,7 @@ ALIGN = 32
 BOOT_DOL_OFFSET, BOOT_FST_OFFSET = 0x420, 0x424
 BI2_AT, APPLOADER_AT = 0x440, 0x2440
 REGION_AT = 0x4e000  # The region setting in the disc's unencrypted area.
-PLATFORMS = {"darwin-x86_64", "darwin-arm64", "linux-aarch64", "linux-x86_64"}
+PLATFORMS = {"darwin-x86_64", "darwin-arm64", "linux-aarch64", "linux-x86_64", "windows-x86_64"}
 
 
 def word(data, at):

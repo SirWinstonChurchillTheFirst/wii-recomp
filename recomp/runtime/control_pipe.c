@@ -62,9 +62,41 @@ static void *control_loop(void *path) {
   return 0;
 }
 
+#ifdef _WIN32
+#include <windows.h>
+// Windows has no named pipes in the file system, so WII_RECOMP_CONTROL names a pipe
+// there: "wii" is \\.\pipe\wii. One sender at a time; the pipe opens again after each.
+static void *control_pipe_loop(void *name) {
+  char path[300], line[1200];
+  const char *last = strrchr((const char *)name, '/');
+  snprintf(path, sizeof path, "\\\\.\\pipe\\%s", last ? last + 1 : (const char *)name);
+  while (1) {
+    HANDLE pipe = CreateNamedPipeA(path, PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 0, 4096, 0, 0);
+    if (pipe == INVALID_HANDLE_VALUE) return 0;
+    if (ConnectNamedPipe(pipe, 0) || GetLastError() == ERROR_PIPE_CONNECTED) {
+      size_t length = 0;
+      char byte;
+      DWORD got;
+      while (ReadFile(pipe, &byte, 1, &got, 0) && got == 1) {
+        if (byte == '\r') continue;
+        if (length < sizeof line - 2) line[length++] = byte;
+        if (byte == '\n') { line[length] = 0; run_command(line); length = 0; }
+      }
+      if (length) { line[length++] = '\n'; line[length] = 0; run_command(line); }
+    }
+    CloseHandle(pipe);
+  }
+}
+
+void input_start_control_pipe(const char *path) {
+  static pthread_t thread;
+  pthread_create(&thread, 0, control_pipe_loop, (void *)path);
+}
+#else
 void input_start_control_pipe(const char *path) {
   static pthread_t thread;
   unlink(path);
   mkfifo(path, 0600);
   pthread_create(&thread, 0, control_loop, (void *)path);
 }
+#endif

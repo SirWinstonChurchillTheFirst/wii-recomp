@@ -139,11 +139,11 @@ void dsp_record_cpu_write(int high, uint16_t value) {
   if (!high) header.mails++;
 }
 
-void dsp_record_read_low(int cpu, uint32_t mail) {
+void dsp_record_read_low(int cpu_side, uint32_t mail) {
   flush_pending();
   note_time();
   event(DSP_EVENT_READ_LOW);
-  uint8_t box = (uint8_t)cpu;
+  uint8_t box = (uint8_t)cpu_side;
   put(&box, 1);
   put(&mail, 4);
 }

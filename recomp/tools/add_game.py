@@ -46,7 +46,14 @@ RECOMP = ROOT / "recomp"
 CONSOLE_BUILD = RECOMP / "build"
 GAMES = ROOT / "games"
 TITLE_ID_OFFSET = 0x18c  # In the disc's tmd.bin.
-LIBRARY = "title.dylib" if sys.platform == "darwin" else "title.so"
+LIBRARY = {"darwin": "title.dylib", "win32": "title.dll"}.get(sys.platform, "title.so")
+PROGRAM = "wii-recomp.exe" if sys.platform == "win32" else "wii-recomp"
+if sys.platform == "win32":
+    # MSYS2's clang and ninja, and the libraries the console loads, ahead of anything else.
+    MSYS2_BIN = Path(os.environ.get("MSYS2_ROOT", "C:/msys64")) / "clang64/bin"
+    if not (MSYS2_BIN / "clang.exe").is_file():
+        raise SystemExit(f"add_game: MSYS2's clang isn't in {MSYS2_BIN}; see docs/windows.md")
+    os.environ["PATH"] = f"{MSYS2_BIN}{os.pathsep}{os.environ['PATH']}"
 DISC_IMAGES = {".iso", ".rvz", ".wbfs", ".ciso", ".gcz", ".wia"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -59,7 +66,7 @@ def fail(message):
 
 def native_platform():
     """The platform name a recompiled disc image files this computer's native code under."""
-    system = {"Darwin": "darwin", "Linux": "linux"}.get(platform.system())
+    system = {"Darwin": "darwin", "Linux": "linux", "Windows": "windows"}.get(platform.system())
     machine = {"AMD64": "x86_64", "x86_64": "x86_64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine())
     if system == "linux" and machine == "arm64":
         machine = "aarch64"
@@ -295,7 +302,7 @@ def main():
 
     (CONSOLE_BUILD / "obj").mkdir(parents=True, exist_ok=True)
     run("build the console", [sys.executable, str(RECOMP / "translate/build_file.py"), str(CONSOLE_BUILD)])
-    run("compile the console", ["ninja", "-j", str(options.jobs), "wii-recomp"], cwd=CONSOLE_BUILD)
+    run("compile the console", ["ninja", "-j", str(options.jobs), PROGRAM], cwd=CONSOLE_BUILD)
     emit = [sys.executable, str(RECOMP / "translate/emit.py"), str(disc / "sys/main.dol"), str(build / "generated"),
             "--all-code", "--virtual-bluetooth", "--profile", str(profile)]
     emit += ["--fifo-breakpoints"] if settings["fifo_breakpoints"] else []
@@ -311,7 +318,7 @@ def main():
         for console in settings["consoles"]:
             install(build, disc, key, console)
         print(f"\n{key} is ready in {time.monotonic() - started:.0f} s. Start it from the Wii Menu, or with:\n"
-              f"  {CONSOLE_BUILD.relative_to(ROOT) / 'wii-recomp'} --console <console> --title {key}\n"
+              f"  {CONSOLE_BUILD.relative_to(ROOT) / PROGRAM} --console <console> --title {key}\n"
               "Run this again after playing to compile the code that ran most for speed.")
         return
     if options.no_pack:
@@ -332,7 +339,7 @@ def main():
     for console in settings["consoles"]:
         insert(image, console)
     print(f"\n{code} is ready in {time.monotonic() - started:.0f} s. Play it with:\n"
-          f"  {CONSOLE_BUILD.relative_to(ROOT) / 'wii-recomp'} {image.relative_to(ROOT)}\n"
+          f"  {CONSOLE_BUILD.relative_to(ROOT) / PROGRAM} {image.relative_to(ROOT)}\n"
           "Run this again after playing to compile the code that ran most for speed.")
 
 

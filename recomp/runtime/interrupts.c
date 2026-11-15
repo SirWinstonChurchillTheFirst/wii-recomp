@@ -29,7 +29,12 @@
 #define BUSY_SLEEP_TICKS (TIME_BASE_HZ / 10000)  // 100 microseconds.
 #define WII_EPOCH_UNIX 946684800ll  // 2000-01-01, when the Wii's time base reads zero.
 
+#ifdef _WIN32
+// At a fixed address on Windows (cpu.h), so it's given its first value as the program loads.
+__attribute__((constructor(102))) static void budget_start(void) { interrupt_budget = CHECK_EVERY; }
+#else
 int interrupt_budget = CHECK_EVERY;
+#endif
 
 static uint64_t decrementer_deadline;
 static int decrementer_armed;
@@ -64,9 +69,16 @@ uint64_t wii_ticks_at(int64_t unix_seconds, long utc_offset_seconds) {
 // A fixed offset, set once, keeps every interval and deadline exactly as it was.
 void time_start(void) {
   time_t now = time(0);
+#ifdef _WIN32
+  struct tm local;
+  localtime_s(&local, &now);
+  long utc_offset = (long)(_mkgmtime(&local) - now);  // Local time read as UTC is ahead by the offset.
+  time_base_offset = wii_ticks_at(now, utc_offset) - monotonic_ticks();
+#else
   struct tm local;
   localtime_r(&now, &local);
   time_base_offset = wii_ticks_at(now, local.tm_gmtoff) - monotonic_ticks();
+#endif
 }
 
 uint64_t time_base(void) { return monotonic_ticks() + time_base_offset; }

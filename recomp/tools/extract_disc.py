@@ -31,6 +31,8 @@ NODTOOL_BUILDS = {
                           "ee8345c004248eb82a86dd0c6068e0fcf3dc75baf68d18fe949bf4589822f5a5"),
     ("Linux", "aarch64"): ("nodtool-linux-aarch64",
                            "33e801c0e4aee7e714ad84e89521f50e2f79005571b9d4779b695e44ea21ff99"),
+    ("Windows", "x86_64"): ("nodtool-windows-x86_64.exe",
+                            "f65de62c44f0ad5d179eff85bd1e92099713ffacbf717f651fb761129a25c7bc"),
 }
 
 
@@ -59,7 +61,7 @@ def find_nodtool():
     installed = shutil.which("nodtool")
     if installed:
         return installed
-    tool = TOOL_FOLDER / "nodtool"
+    tool = TOOL_FOLDER / ("nodtool.exe" if platform.system() == "Windows" else "nodtool")
     if tool.exists():
         return str(tool)
     asset, expected = nodtool_build(platform.system(), platform.machine())

@@ -18,6 +18,8 @@
 
 #ifdef __APPLE__
 #define LIBRARY_NAME "title.dylib"
+#elif defined(_WIN32)
+#define LIBRARY_NAME "title.dll"
 #else
 #define LIBRARY_NAME "title.so"
 #endif

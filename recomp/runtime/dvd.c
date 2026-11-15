@@ -12,7 +12,7 @@
 
 enum {
   INQUIRY = 0x12, READ_DISC_ID = 0x70, READ = 0x71, GET_COVER_REGISTER = 0x7a, CLEAR_COVER_INTERRUPT = 0x86, GET_COVER_STATUS = 0x88, RESET = 0x8a, OPEN_PARTITION = 0x8b, CLOSE_PARTITION = 0x8c, UNENCRYPTED_READ = 0x8d,
-  GET_STATUS_REGISTER = 0x95, REQUEST_ERROR = 0xe0, STOP_MOTOR = 0xe3, EJECT_AT = 7, EJECT = 1,
+  GET_STATUS_REGISTER = 0x95, READ_BCA = 0xda, BCA_BYTES = 0x40, BCA_MARK_AT = 0x33, REQUEST_ERROR = 0xe0, STOP_MOTOR = 0xe3, EJECT_AT = 7, EJECT = 1,
   COVER_OPEN = 1, NO_MEDIUM = 0x01023a00,  // The drive's error for "no disc".
   DRIVE_OK = 1, DRIVE_ERROR = 2, SECURITY_ERROR = 32,
   COVER_STATUS_EMPTY = 1, COVER_STATUS_DISC = 2,  // GetCoverStatus: no disc, or a disc in (Dolphin's DI.cpp).
@@ -126,6 +126,15 @@ int dvd_request(uint32_t command, uint32_t request) {
     int result = read_disc((uint64_t)rd32(input + 8) << 2, rd32(input + 4), output);
     stage_add(STAGE_DISC, time_base() - started);
     return result;
+  }
+  if (code == READ_BCA) {
+    // The burst cutting area, 64 bytes pressed near the hub, which a disc image doesn't
+    // hold. As Dolphin's DI.cpp answers it: zeros, with a 1 after the first 0x33 bytes,
+    // which New Super Mario Bros. Wii checks for.
+    if (output == 0x80000000u || out_bytes < BCA_BYTES || !host(output)) return SECURITY_ERROR;
+    memset(host(output), 0, BCA_BYTES);
+    host(output)[BCA_MARK_AT] = 1;
+    return DRIVE_OK;
   }
   if (code == CLOSE_PARTITION) return DRIVE_OK;  // Opening it changes nothing, so neither does closing.
   if (code == CLEAR_COVER_INTERRUPT) return DRIVE_OK;  // Discs never change, so it never interrupts.

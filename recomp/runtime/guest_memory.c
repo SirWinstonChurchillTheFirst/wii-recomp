@@ -8,6 +8,75 @@
 // silent. The handler only calls mprotect and stores to a fixed array, both safe in a
 // signal handler. A fault anywhere outside the window is a real crash and goes on to
 // whatever handler was there before.
+#ifdef _WIN32
+// Windows: the same, with a vectored exception handler in place of the signal handler.
+// It runs first for every access violation in the program, on the thread that faulted.
+#include <windows.h>
+#undef interface
+#include <stdatomic.h>
+#include <stdio.h>
+
+#include "gaps.h"
+#include "guest_memory.h"
+#include "memory_watch.h"
+
+uint8_t *mem1;
+uint8_t *mem2;
+
+enum { OPENED_KEPT = 64 };
+static uint32_t opened[OPENED_KEPT];
+static atomic_uint opened_count;
+static unsigned reported;
+static int log_faults;
+
+static void say_crash(EXCEPTION_POINTERS *fault) {
+  void *pc = fault->ExceptionRecord->ExceptionAddress;
+  char module[MAX_PATH] = "?";
+  HMODULE base = 0;
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, pc, &base)) {
+    GetModuleFileNameA(base, module, sizeof module);
+  }
+  fprintf(stderr, "crash: a fault at %#llx, instruction %p\ncrash: in %s at offset %#llx\n",
+          (unsigned long long)fault->ExceptionRecord->ExceptionInformation[1], pc, module,
+          (unsigned long long)((uintptr_t)pc - (uintptr_t)base));
+  fflush(stderr);
+}
+
+static LONG CALLBACK on_fault(EXCEPTION_POINTERS *fault) {
+  if (fault->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+  uintptr_t at = (uintptr_t)fault->ExceptionRecord->ExceptionInformation[1], base = (uintptr_t)GUEST_BASE;
+  if (at < base || at >= base + GUEST_WINDOW + GUEST_GUARD) {
+    say_crash(fault);
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (watch_fault((uint64_t)(at - base))) return EXCEPTION_CONTINUE_EXECUTION;
+  uintptr_t page = at & ~(uintptr_t)4095;
+  if (!VirtualAlloc((void *)page, 4096, MEM_COMMIT, PAGE_READWRITE)) {
+    say_crash(fault);
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (log_faults) fprintf(stderr, "guard page opened at 0x%08x\n", (uint32_t)(at - base));
+  unsigned slot = atomic_fetch_add(&opened_count, 1);
+  if (slot < OPENED_KEPT) opened[slot] = (uint32_t)(at - base);
+  return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+void guest_memory_init(void) {
+  guest_memory_reserve();
+  log_faults = getenv("WII_RECOMP_GUARD_LOG") != 0;
+  watch_start(4096);
+  AddVectoredExceptionHandler(1, on_fault);
+}
+
+void guest_memory_report(void) {
+  unsigned count = atomic_load(&opened_count);
+  while (reported < count && reported < OPENED_KEPT) gap_hit("cpu.dsi_isi", opened[reported++]);
+  if (count > OPENED_KEPT && reported == OPENED_KEPT) {
+    gap_hit("limit.guard_pages_opened", count);
+    reported++;
+  }
+}
+#else
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE
 #define _GNU_SOURCE
@@ -123,3 +192,4 @@ void guest_memory_report(void) {
     reported++;
   }
 }
+#endif

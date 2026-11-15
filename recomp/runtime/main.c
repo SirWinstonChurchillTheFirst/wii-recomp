@@ -27,7 +27,9 @@
 #include "title.h"
 #include "net.h"
 
+#ifndef _WIN32
 Cpu cpu;
+#endif
 
 #define STACK_BYTES (1024u * 1024u * 1024u)
 
@@ -76,6 +78,8 @@ static void *run(void *unused) {
 
 #ifdef __APPLE__
 #define LIBRARY_SUFFIX "dylib"
+#elif defined(_WIN32)
+#define LIBRARY_SUFFIX "dll"
 #else
 #define LIBRARY_SUFFIX "so"
 #endif
@@ -160,6 +164,10 @@ int main(int count, char **arguments) {
                     "       wii-recomp --console <console folder> [--boot-disc | --title <high>-<low>]\n");
     return 1;
   }
+#ifdef _WIN32
+  setenv("WII_RECOMP_SHOP_SERVER", "off", 0);  // No network on Windows yet: net_win.c.
+  setvbuf(stderr, 0, _IONBF, 0);
+#endif
   console_remember(arguments);
   net_remember_program(arguments[0]);
   if (!strcmp(arguments[1], "--console")) {

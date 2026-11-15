@@ -17,7 +17,11 @@ typedef struct {
   uint32_t sr[16];          // Segment registers. Stored only, as nothing maps through them.
 } Cpu;
 
+#ifdef _WIN32
+#define cpu (*(Cpu *)HOST_STATE_ADDRESS)
+#else
 extern Cpu cpu;
+#endif
 
 typedef void (*GuestFunction)(void);
 void dispatch(uint32_t address);
@@ -50,7 +54,11 @@ void load_context(void);
 void enter_exception(uint32_t kind, uint32_t handler);
 
 // Interrupts (interrupts.c). Translated code counts down and checks in here.
+#ifdef _WIN32
+#define interrupt_budget (*(int *)(HOST_STATE_ADDRESS + 0x8000))
+#else
 extern int interrupt_budget;
+#endif
 void poll_interrupts(void);
 // The program turned external interrupts on (mtmsr). One already waiting is taken at the
 // next check, as the processor takes it at once, rather than when the count runs out:

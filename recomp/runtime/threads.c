@@ -3,7 +3,9 @@
 #define _XOPEN_SOURCE 700
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <ucontext.h>
+#endif
 
 #include "cpu.h"
 
@@ -27,7 +29,25 @@ enum {
 // the Intel Mac the old way only worked while no later call happened to overwrite those
 // slots; the flat guest memory changed the code's frames, and rbx came back as a guest
 // value.
-#if defined(__aarch64__)
+#if defined(_WIN32) && defined(__x86_64__)
+// Windows has no ucontext, and its calling convention keeps more registers. One record
+// serves both ways of saving: what a function must keep for its caller, where it returns
+// to, and the stack's bounds, which Windows keeps per thread (the TEB) and uses to grow a
+// stack and to deliver a fault.
+#define RECORDS_CALLER 1
+typedef struct {
+  uint64_t rbx, rbp, rdi, rsi, r12, r13, r14, r15;
+  uint64_t return_address, stack;
+  uint64_t stack_base, stack_limit, stack_reserved;
+  uint64_t padding;
+  uint8_t xmm6_to_xmm15[160];
+} CallerRegisters;
+typedef CallerRegisters ucontext_t;
+__attribute__((returns_twice)) int context_capture(CallerRegisters *context);  // 0, then 1 once resumed.
+__attribute__((noreturn)) void context_resume(const CallerRegisters *context);
+#define getcontext(context) context_capture(context)
+#define setcontext(context) context_resume(context)
+#elif defined(__aarch64__)
 #define RECORDS_CALLER 1
 typedef struct {
   uint64_t x19_to_x30[12], stack, d8_to_d15[8], padding;
@@ -88,7 +108,65 @@ static Slot *slot_for(uint32_t guest) {
 #define SYMBOL(prefix, name) NAME_WITH(prefix, name)
 
 // Puts the registers back and returns from the save_context that recorded them.
-#if defined(__x86_64__)
+#if defined(_WIN32) && defined(__x86_64__)
+#define XMM_LOAD(base, reg) \
+  "movups " #base "+0(" reg "), %xmm6\n" "movups " #base "+16(" reg "), %xmm7\n" "movups " #base "+32(" reg "), %xmm8\n" \
+  "movups " #base "+48(" reg "), %xmm9\n" "movups " #base "+64(" reg "), %xmm10\n" "movups " #base "+80(" reg "), %xmm11\n" \
+  "movups " #base "+96(" reg "), %xmm12\n" "movups " #base "+112(" reg "), %xmm13\n" "movups " #base "+128(" reg "), %xmm14\n" \
+  "movups " #base "+144(" reg "), %xmm15\n"
+#define XMM_SAVE(base, reg) \
+  "movups %xmm6, " #base "+0(" reg ")\n" "movups %xmm7, " #base "+16(" reg ")\n" "movups %xmm8, " #base "+32(" reg ")\n" \
+  "movups %xmm9, " #base "+48(" reg ")\n" "movups %xmm10, " #base "+64(" reg ")\n" "movups %xmm11, " #base "+80(" reg ")\n" \
+  "movups %xmm12, " #base "+96(" reg ")\n" "movups %xmm13, " #base "+112(" reg ")\n" "movups %xmm14, " #base "+128(" reg ")\n" \
+  "movups %xmm15, " #base "+144(" reg ")\n"
+__attribute__((naked, returns_twice)) int context_capture(CallerRegisters *context) {
+  __asm__(
+      "movq %rbx, 0(%rcx)\n"
+      "movq %rbp, 8(%rcx)\n"
+      "movq %rdi, 16(%rcx)\n"
+      "movq %rsi, 24(%rcx)\n"
+      "movq %r12, 32(%rcx)\n"
+      "movq %r13, 40(%rcx)\n"
+      "movq %r14, 48(%rcx)\n"
+      "movq %r15, 56(%rcx)\n"
+      "movq (%rsp), %rax\n"
+      "movq %rax, 64(%rcx)\n"
+      "leaq 8(%rsp), %rax\n"
+      "movq %rax, 72(%rcx)\n"
+      "movq %gs:0x8, %rax\n"
+      "movq %rax, 80(%rcx)\n"
+      "movq %gs:0x10, %rax\n"
+      "movq %rax, 88(%rcx)\n"
+      "movq %gs:0x1478, %rax\n"
+      "movq %rax, 96(%rcx)\n"
+      XMM_SAVE(112, "%rcx")
+      "xorl %eax, %eax\n"
+      "ret\n");
+}
+__attribute__((naked, noreturn)) void context_resume(const CallerRegisters *context) {
+  __asm__(
+      XMM_LOAD(112, "%rcx")
+      "movq 80(%rcx), %rax\n"
+      "movq %rax, %gs:0x8\n"
+      "movq 88(%rcx), %rax\n"
+      "movq %rax, %gs:0x10\n"
+      "movq 96(%rcx), %rax\n"
+      "movq %rax, %gs:0x1478\n"
+      "movq 0(%rcx), %rbx\n"
+      "movq 8(%rcx), %rbp\n"
+      "movq 16(%rcx), %rdi\n"
+      "movq 24(%rcx), %rsi\n"
+      "movq 32(%rcx), %r12\n"
+      "movq 40(%rcx), %r13\n"
+      "movq 48(%rcx), %r14\n"
+      "movq 56(%rcx), %r15\n"
+      "movq 64(%rcx), %rdx\n"
+      "movq 72(%rcx), %rsp\n"
+      "movl $1, %eax\n"
+      "jmpq *%rdx\n");
+}
+#define return_to_caller(caller) context_resume(caller)
+#elif defined(__x86_64__)
 __attribute__((naked, noreturn)) static void return_to_caller(const CallerRegisters *caller) {
   __asm__(
       "movq 0(%rdi), %rbx\n"
@@ -161,13 +239,41 @@ static void read_registers(uint32_t c) {
 // returns, it continues at the link register, which holds the thread's exit.
 static uint32_t start_pc;
 
-static void thread_start(void) {
+__attribute__((used)) void thread_start(void) {
   if (getenv("TRACE_THREADS")) fprintf(stderr, "thread starts at %08x, stack %08x, link %08x\n", start_pc, cpu.r[1], cpu.lr);
   dispatch(start_pc);
   if (getenv("TRACE_THREADS")) fprintf(stderr, "thread from %08x returned, link %08x\n", start_pc, cpu.lr);
   while (1) dispatch(cpu.lr);
 }
 
+#ifdef _WIN32
+#include <windows.h>
+#define FIRST_COMMIT (256u * 1024u)
+// Moves to a new stack and runs thread_start there. Windows grows a stack through the
+// guard page below what's in use, by the bounds in the TEB, so those are set first.
+__attribute__((naked, noreturn)) static void start_on_stack(void *top, void *limit, void *reserved) {
+  __asm__(
+      "movq %rcx, %gs:0x8\n"
+      "movq %rdx, %gs:0x10\n"
+      "movq %r8, %gs:0x1478\n"
+      "leaq -72(%rcx), %rsp\n"
+      "movq $0, (%rsp)\n"
+      "jmp thread_start\n");
+}
+
+static void start_fresh(Slot *slot, uint32_t pc) {
+  uint8_t *stack = VirtualAlloc(0, HOST_STACK_BYTES, MEM_RESERVE, PAGE_READWRITE);
+  uint8_t *top = stack + HOST_STACK_BYTES;
+  if (!stack || !VirtualAlloc(top - FIRST_COMMIT, FIRST_COMMIT, MEM_COMMIT, PAGE_READWRITE)
+      || !VirtualAlloc(top - FIRST_COMMIT - 4096, 4096, MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD)) {
+    fprintf(stderr, "stop: no memory for a thread's stack (error %lu)\n", GetLastError());
+    exit(5);
+  }
+  start_pc = pc;
+  slot->resume_pc = 0;
+  start_on_stack(top, top - FIRST_COMMIT, stack);
+}
+#else
 static void start_fresh(Slot *slot, uint32_t pc) {
   static ucontext_t fresh;
   getcontext(&fresh);
@@ -179,6 +285,7 @@ static void start_fresh(Slot *slot, uint32_t pc) {
   slot->resume_pc = 0;
   setcontext(&fresh);
 }
+#endif
 
 void load_context(void) {
   uint32_t c = cpu.r[3];
@@ -206,7 +313,37 @@ void load_context(void) {
 void save_context_recorded(const CallerRegisters *caller);
 
 // Returns 0 the first time, and 1 when something loads this context again.
-#if defined(__x86_64__)
+#if defined(_WIN32) && defined(__x86_64__)
+// On entry the return address is at the stack pointer. 312 bytes hold the 32 the callee
+// may use, the record, and 8 to keep the stack 16-aligned for the call.
+__attribute__((naked)) void save_context(void) {
+  __asm__(
+      "subq $312, %rsp\n"
+      "movq %rbx, 32(%rsp)\n"
+      "movq %rbp, 40(%rsp)\n"
+      "movq %rdi, 48(%rsp)\n"
+      "movq %rsi, 56(%rsp)\n"
+      "movq %r12, 64(%rsp)\n"
+      "movq %r13, 72(%rsp)\n"
+      "movq %r14, 80(%rsp)\n"
+      "movq %r15, 88(%rsp)\n"
+      "movq 312(%rsp), %rax\n"
+      "movq %rax, 96(%rsp)\n"
+      "leaq 320(%rsp), %rax\n"
+      "movq %rax, 104(%rsp)\n"
+      "movq %gs:0x8, %rax\n"
+      "movq %rax, 112(%rsp)\n"
+      "movq %gs:0x10, %rax\n"
+      "movq %rax, 120(%rsp)\n"
+      "movq %gs:0x1478, %rax\n"
+      "movq %rax, 128(%rsp)\n"
+      XMM_SAVE(144, "%rsp")
+      "leaq 32(%rsp), %rcx\n"
+      "call save_context_recorded\n"
+      "addq $312, %rsp\n"
+      "ret\n");
+}
+#elif defined(__x86_64__)
 // On entry the return address is at the stack pointer, and the caller's stack is 8 above.
 // 72 bytes keep the stack 16-aligned for the call.
 __attribute__((naked)) void save_context(void) {

@@ -222,25 +222,33 @@ void vk_create_device(void) {
   if ((depth.optimalTilingFeatures & blits) != blits) fprintf(stderr, "vulkan: this device can't blit depth, so depth copies will fail\n");
 }
 
-static uint32_t find_memory(uint32_t allowed, VkMemoryPropertyFlags wanted, VkMemoryPropertyFlags needed) {
+// Memory with the properties `needed`, and `wanted` too where there is some. A type that
+// has them can still be out of room: a discrete card's memory the processor can also
+// reach is a small heap of its own (256 MiB on NVIDIA's), and the rings don't all fit. So
+// each suitable type is tried in turn, the wanted ones first.
+static VkDeviceMemory allocate(VkMemoryRequirements needs, VkMemoryPropertyFlags wanted, VkMemoryPropertyFlags needed) {
   VkPhysicalDeviceMemoryProperties memory;
   vkGetPhysicalDeviceMemoryProperties(vk.physical, &memory);
   VkMemoryPropertyFlags tries[2] = {wanted | needed, needed};
+  VkResult result = VK_ERROR_FEATURE_NOT_PRESENT;
+  uint32_t tried = 0;
   for (int attempt = 0; attempt < 2; attempt++) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
-      if ((allowed & (1u << i)) && (memory.memoryTypes[i].propertyFlags & tries[attempt]) == tries[attempt]) return i;
+      if (!(needs.memoryTypeBits & (1u << i)) || (tried & (1u << i))) continue;
+      if ((memory.memoryTypes[i].propertyFlags & tries[attempt]) != tries[attempt]) continue;
+      tried |= 1u << i;
+      VkMemoryAllocateInfo info = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = needs.size, .memoryTypeIndex = i};
+      VkDeviceMemory got;
+      result = vkAllocateMemory(vk.device, &info, 0, &got);
+      if (result == VK_SUCCESS) return got;
     }
   }
-  fprintf(stderr, "stop: vulkan: no suitable memory\n");
-  exit(10);
-}
-
-static VkDeviceMemory allocate(VkMemoryRequirements needs, VkMemoryPropertyFlags wanted, VkMemoryPropertyFlags needed) {
-  VkMemoryAllocateInfo info = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = needs.size,
-                               .memoryTypeIndex = find_memory(needs.memoryTypeBits, wanted, needed)};
-  VkDeviceMemory memory;
-  vk_check(vkAllocateMemory(vk.device, &info, 0, &memory), "allocating memory");
-  return memory;
+  if (!tried) {
+    fprintf(stderr, "stop: vulkan: no suitable memory\n");
+    exit(10);
+  }
+  vk_check(result, "allocating memory");
+  return 0;
 }
 
 void vk_create_image(VkFormat format, VkImageUsageFlags usage, uint32_t width, uint32_t height, uint32_t levels,

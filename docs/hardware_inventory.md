@@ -760,6 +760,7 @@ The game's program is recognised by a checksum of its code, as Dolphin does, and
 | `ios.inquiry_0x12` | Inquiry 0x12 | partial | `runtime/dvd.c:119` | Zeros with success. |
 | `ios.reset_spin_up_cover_interrupts` | Reset, spin-up, cover interrupts | done | `runtime/dvd.c:150-152` | Nothing to do. |
 | `ios.unencryptedread_0x8d` | UnencryptedRead 0x8D | done | `runtime/dvd.c:80`, `:110` | Reads the raw area, made region-free. |
+| `ios.readdiskbca_0xda` | ReadDiskBca 0xDA | partial | `runtime/dvd.c` | The answer Dolphin gives when an image has no BCA: zeros and a 1 at 0x33. |
 | `ios.getlength_seek_readdvd` | GetLength, Seek, ReadDvd | missing | `runtime/dvd.c:123` | Answered with an error. |
 | `ios.error_reporting` | Error reporting | partial | `runtime/dvd.c:13`, `:106` | No medium when the drive is empty, otherwise 0. |
 
