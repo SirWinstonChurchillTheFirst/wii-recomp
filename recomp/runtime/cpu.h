@@ -70,6 +70,9 @@ void interrupts_turned_on(void);
 void decrementer_set(uint32_t value);
 uint32_t decrementer_get(void);
 void locked_cache_transfer(void);
+// Writing WPAR resets the CPU's write-gather pipe, dropping bytes it hadn't sent, as
+// Dolphin's GPFifo does (gx_fifo.c). GXBeginDisplayList relies on it.
+void graphics_pipe_reset(void);
 #define POLL() do { if (--interrupt_budget < 0) poll_interrupts(); } while (0)
 
 // Memory is one window at a fixed address (guest_memory.h). An access costs a mask, one

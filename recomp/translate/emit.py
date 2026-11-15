@@ -47,6 +47,7 @@ IOS_OFFSET = 0x184  # The IOS the title asks for, in its TMD.
 TITLE_ID_OFFSET = 0x18c  # In the disc's tmd.bin.
 DECREMENTER = 22
 CACHE_DMA_LOW = 923
+WRITE_PIPE_ADDRESS = 921  # WPAR: where the CPU's write-gather pipe sends its bursts.
 LINK = 8
 COUNT = 9
 XER = 1
@@ -396,6 +397,8 @@ def emit_any(address, word, name):
         n = spr_number(word)
         special = {DECREMENTER: "decrementer_get()", LINK: "cpu.lr", COUNT: "cpu.ctr", XER: "xer_get()",
                    TIME_LOW: "(uint32_t)guest_time_base()", TIME_HIGH: "(uint32_t)(guest_time_base() >> 32)"}
+        if n == WRITE_PIPE_ADDRESS:  # Its low bit says the pipe holds bytes; read as empty, as Dolphin does.
+            return f"cpu.r[{d}] = cpu.spr[{n}] & ~1u;"
         return f"cpu.r[{d}] = {special.get(n, f'cpu.spr[{n}]')};"
     if name == "mtspr":
         n = spr_number(word)
@@ -409,6 +412,8 @@ def emit_any(address, word, name):
             return f"xer_set(cpu.r[{d}]);"
         if n == CACHE_DMA_LOW:
             return f"cpu.spr[{n}] = cpu.r[{d}]; locked_cache_transfer();"
+        if n == WRITE_PIPE_ADDRESS:
+            return f"cpu.spr[{n}] = cpu.r[{d}]; graphics_pipe_reset();"
         if n in (TIME_LOW_WRITE, TIME_HIGH_WRITE):
             return f"cpu.spr[{n}] = cpu.r[{d}]; guest_time_base_set({int(n == TIME_HIGH_WRITE)}, cpu.r[{d}]);"
         return f"cpu.spr[{n}] = cpu.r[{d}];"

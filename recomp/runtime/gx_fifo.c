@@ -614,6 +614,15 @@ static void feed_stream(uint32_t value, int bytes) {
 
 void graphics_pipe_write(uint32_t value, int bytes) { feed_stream(value, bytes); }
 
+// A write to WPAR: the bytes the pipe hadn't sent are dropped, as Dolphin's
+// GPFifoManager::ResetGatherPipe drops them. GXBeginDisplayList does it after pointing the
+// CPU's FIFO at the list, so a partly filled burst from before never lands in the list:
+// with them, a list came out 32 bytes longer than the game had measured it.
+void graphics_pipe_reset(void) {
+  if (burst_used && getenv("WII_RECOMP_PIPE_LOG")) fprintf(stderr, "pipe: %u bytes dropped at a WPAR write\n", burst_used);
+  burst_used = 0;
+}
+
 uint64_t graphics_next_due(void) {
   uint64_t token = atomic_load(&token_due), finish = atomic_load(&finish_due);
   if (token && finish) return token < finish ? token : finish;
