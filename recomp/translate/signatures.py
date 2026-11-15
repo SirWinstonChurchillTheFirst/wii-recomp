@@ -207,6 +207,11 @@ def resolve(program, functions, entries):
                     progress = True
     missing = [entry["name"] for entry in wanted
                if entry["name"] not in found and entry["group"] != "optional" and entry.get("or") not in found]
+    # An entry marked warn_only only makes things clearer when found (a panic reported and
+    # stopped on); without it the game's own code runs, so the build goes on and says so.
+    for name in [m for m in missing if any(e["name"] == m and e.get("warn_only") for e in wanted)]:
+        print(f"warning: {name} not found; the game's own code runs in its place", file=sys.stderr)
+        missing.remove(name)
     if missing:
         raise SystemExit("System functions not found: " + ", ".join(missing))
     wanted = [entry for entry in wanted if entry["name"] in found]

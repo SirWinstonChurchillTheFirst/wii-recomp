@@ -435,7 +435,12 @@ void save_context(void) {
 // rather than jumps, so a longjmp into another stack must become a host context switch,
 // exactly as OSLoadContext's is: setjmp records its caller's host registers too, and
 // longjmp either returns to them, or starts the function on a host stack of its own.
-enum { JUMP_LR = 0, JUMP_CR = 4, JUMP_SP = 8, JUMP_R2 = 12, JUMP_R13 = 20, JUMP_FPR = 96, JUMP_FPSCR = 384, MAX_JUMPS = 1024 };
+// Two layouts are known: the C library's with paired singles (each of f14 to f31 in 16
+// bytes, the FPSCR at 384), and the plain one Hudson's engine keeps in Mario Party 8 (8 bytes
+// each, the FPSCR at 240). Both keep the rest where the other does.
+enum { JUMP_LR = 0, JUMP_CR = 4, JUMP_SP = 8, JUMP_R2 = 12, JUMP_R13 = 20, JUMP_FPR = 96, MAX_JUMPS = 1024 };
+typedef struct { int fpr_stride, fpscr_at, paired; } JumpLayout;
+static const JumpLayout JUMP_PAIRED = {16, 384, 1}, JUMP_PLAIN = {8, 240, 0};
 static Slot jump_slots[MAX_JUMPS];
 
 static Slot *jump_slot_for(uint32_t buffer) {
@@ -450,20 +455,21 @@ static Slot *jump_slot_for(uint32_t buffer) {
   exit(5);
 }
 
-static void write_jump_buffer(uint32_t b) {
+static void write_jump_buffer(uint32_t b, const JumpLayout *layout) {
   wr32(b + JUMP_LR, cpu.lr);
   wr32(b + JUMP_CR, condition_bits());
   wr32(b + JUMP_SP, cpu.r[1]);
   wr32(b + JUMP_R2, cpu.r[2]);
   for (int i = 13; i < 32; i++) wr32(b + JUMP_R13 + (i - 13) * 4, cpu.r[i]);
   for (int i = 14; i < 32; i++) {
-    wr64(b + JUMP_FPR + (i - 14) * 16, double_bits(cpu.f[i]));
-    ps_store(b + JUMP_FPR + (i - 14) * 16 + 8, 0, 0, i);  // psq_st with GQR 0: both values as singles.
+    uint32_t at = b + JUMP_FPR + (uint32_t)((i - 14) * layout->fpr_stride);
+    wr64(at, double_bits(cpu.f[i]));
+    if (layout->paired) ps_store(at + 8, 0, 0, i);  // psq_st with GQR 0: both values as singles.
   }
-  wr64(b + JUMP_FPSCR, double_bits(fpscr_as_double()));
+  wr64(b + (uint32_t)layout->fpscr_at, double_bits(fpscr_as_double()));
 }
 
-static void read_jump_buffer(uint32_t b) {
+static void read_jump_buffer(uint32_t b, const JumpLayout *layout) {
   cpu.lr = rd32(b + JUMP_LR);
   uint32_t cr = rd32(b + JUMP_CR);
   for (int i = 0; i < 8; i++) cpu.cr[i] = (cr >> (28 - i * 4)) & 15;
@@ -471,19 +477,18 @@ static void read_jump_buffer(uint32_t b) {
   cpu.r[2] = rd32(b + JUMP_R2);
   for (int i = 13; i < 32; i++) cpu.r[i] = rd32(b + JUMP_R13 + (i - 13) * 4);
   for (int i = 14; i < 32; i++) {
-    cpu.f[i] = as_double(rd64(b + JUMP_FPR + (i - 14) * 16));
-    ps_load(b + JUMP_FPR + (i - 14) * 16 + 8, 0, 0, i);
+    uint32_t at = b + JUMP_FPR + (uint32_t)((i - 14) * layout->fpr_stride);
+    cpu.f[i] = as_double(rd64(at));
+    if (layout->paired) ps_load(at + 8, 0, 0, i);
+    else cpu.p[i] = cpu.f[i];  // lfd sets both halves of a paired single.
   }
-  fpscr_write_fields(255, (uint32_t)rd64(b + JUMP_FPSCR));
+  fpscr_write_fields(255, (uint32_t)rd64(b + (uint32_t)layout->fpscr_at));
 }
 
 #ifdef RECORDS_CALLER
-void guest_setjmp_recorded(const CallerRegisters *caller);
-RECORDING_STUB(guest_setjmp, guest_setjmp_recorded)
-
-void guest_setjmp_recorded(const CallerRegisters *caller) {
+static void setjmp_recorded(const CallerRegisters *caller, const JumpLayout *layout) {
   uint32_t b = cpu.r[3];
-  write_jump_buffer(b);
+  write_jump_buffer(b, layout);
   record("setjmp", b, cpu.lr);
   Slot *slot = jump_slot_for(b);
   slot->resume_pc = cpu.lr;
@@ -493,9 +498,9 @@ void guest_setjmp_recorded(const CallerRegisters *caller) {
   cpu.r[3] = 0;
 }
 
-void guest_longjmp(void) {
+static void longjmp_with(const JumpLayout *layout) {
   uint32_t b = cpu.r[3], value = cpu.r[4];
-  read_jump_buffer(b);
+  read_jump_buffer(b, layout);
   cpu.r[3] = value ? value : 1;
   record("longjmp", b, cpu.lr);
   Slot *slot = jump_slot_for(b);
@@ -504,6 +509,13 @@ void guest_longjmp(void) {
   slot->use_caller = 0;
   start_fresh(slot, cpu.lr);
 }
+
+void guest_setjmp_recorded(const CallerRegisters *caller) { setjmp_recorded(caller, &JUMP_PAIRED); }
+void guest_setjmp_plain_recorded(const CallerRegisters *caller) { setjmp_recorded(caller, &JUMP_PLAIN); }
+RECORDING_STUB(guest_setjmp, guest_setjmp_recorded)
+RECORDING_STUB(guest_setjmp_plain, guest_setjmp_plain_recorded)
+void guest_longjmp(void) { longjmp_with(&JUMP_PAIRED); }
+void guest_longjmp_plain(void) { longjmp_with(&JUMP_PLAIN); }
 #endif
 
 // An exception saves where the code was, runs the game's handler with

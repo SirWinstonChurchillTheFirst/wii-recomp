@@ -55,6 +55,8 @@ void enter_exception(uint32_t kind, uint32_t handler);
 // The game's setjmp and longjmp, as host context switches (threads.c).
 void guest_setjmp(void);
 void guest_longjmp(void);
+void guest_setjmp_plain(void);   // The same without paired singles (Mario Party 8).
+void guest_longjmp_plain(void);
 
 // Interrupts (interrupts.c). Translated code counts down and checks in here.
 #ifdef _WIN32
