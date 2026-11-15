@@ -527,6 +527,8 @@ def address_text(address):
         return f"({MODULE['prefix']}_code + 0x{address - MODULE['base']:x}u)"
     if MODULE and address in MODULE.get("fixed", {}):
         return f"0x{MODULE['fixed'][address]:x}u"
+    if MODULE and address in MODULE.get("linked", {}):
+        return f"module_branch_target({MODULE['prefix']}_code + 0x{MODULE['linked'][address]:x}u)"
     if MODULE and MODULE["imports"] <= address < MODULE["imports"] + 4 * MODULE["import_count"]:
         return f"{MODULE['prefix']}_import[{(address - MODULE['imports']) // 4}]"
     return f"0x{address:x}u"
@@ -543,9 +545,12 @@ def emit_field(address, word, name):
     """An instruction whose immediate the module's linker fills in, as C that works it out."""
     kind, section, symbol, addend = MODULE["fields"][address]
     prefix = MODULE["prefix"]
-    target = f"{prefix}_section[{section}]" if symbol is None else f"{prefix}_import[{symbol}]"
-    target = f"({target} + 0x{addend:x}u)"
-    value = {"lo": f"({target} & 0xffffu)", "hi": f"(({target}) >> 16)", "ha": f"((({target}) + 0x8000u) >> 16)"}[kind]
+    if kind == "linked":  # Against another module: the immediate the game's linker wrote, read as it runs.
+        value = f"(rd32({prefix}_code + 0x{addend:x}u) & 0xffffu)"
+    else:
+        target = f"{prefix}_section[{section}]" if symbol is None else f"{prefix}_import[{symbol}]"
+        target = f"({target} + 0x{addend:x}u)"
+        value = {"lo": f"({target} & 0xffffu)", "hi": f"(({target}) >> 16)", "ha": f"((({target}) + 0x8000u) >> 16)"}[kind]
     text = emit(address, (word & 0xffff0000) | FIELD_STAND_IN, name)
     forms = [(f"0x{FIELD_STAND_IN << 16:x}u", f"({value} << 16)"), (f"0x{FIELD_STAND_IN:x}u", value),
              (str(FIELD_STAND_IN), f"(int32_t)(int16_t){value}")]
@@ -842,7 +847,23 @@ def module_program_calls(found):
     return {r.addend for _, module in found if module.kind == "rel" for r in module.fixed if r.kind == modules.REL24}
 
 
-def emit_module(module, number, out, exports, program_starts, counts):
+def links_between(found):
+    """{module number: code offsets} that other REL modules branch or point to, which are
+    function starts there even when nothing inside the module leads to them."""
+    by_id = {module.module_id: module for _, module in found if module.kind == "rel" and module.module_id}
+    starts = {}
+    for _, module in found:
+        for reloc in module.external if module.kind == "rel" else ():
+            target, section = reloc.symbol
+            other = by_id.get(target)
+            if not other or reloc.kind not in (modules.REL24, modules.ADDR32) or section not in other.executable:
+                continue
+            if len(other.executable) == 1:
+                starts.setdefault(target, set()).add(reloc.addend)
+    return starts
+
+
+def emit_module(module, number, out, exports, program_starts, counts, extra_starts=()):
     """Translates a run-time-loaded module's code into native functions, wherever it is
     loaded. Writes m<number>_*.c and returns the C for its entry in the module table, or
     None if the module can't be prepared, which leaves it to the interpreter.
@@ -853,7 +874,7 @@ def emit_module(module, number, out, exports, program_starts, counts):
     global MODULE
     base, imports = MODULE_BASE + number * MODULE_SPACING, MODULE_IMPORTS + number * MODULE_SPACING
     try:
-        prepared = modules.prepare(module, base, imports)
+        prepared = modules.prepare(module, base, imports, extra_starts)
     except modules.Unsupported as reason:
         print(f"{module.name}: left to the interpreter, {reason}")
         return None
@@ -866,9 +887,10 @@ def emit_module(module, number, out, exports, program_starts, counts):
     functions = {}
     add_starts(program, functions, prepared.starts)
     prefix = f"m{number}"
-    import_count = len(module.imports) + len(prepared.fixed_calls)
+    import_count = len(module.imports) + len(prepared.fixed_calls) + len(prepared.linked_calls)
     fixed = {imports + 4 * n: address for n, address in prepared.fixed_calls.items()}
-    MODULE = {"prefix": prefix, "base": base, "size": len(prepared.code), "imports": imports,
+    linked = {imports + 4 * n: at for n, at in prepared.linked_calls.items()}
+    MODULE = {"prefix": prefix, "base": base, "size": len(prepared.code), "imports": imports, "linked": linked,
               "import_count": import_count, "fields": prepared.fields, "fixed": fixed, "program": program_starts}
     counting = counts is not None
     try:
@@ -879,7 +901,7 @@ def emit_module(module, number, out, exports, program_starts, counts):
         counter = (f"extern uint32_t {prefix}_counts[];\n"
                    f"#define POLL_COUNTED(i) do {{ {prefix}_counts[i]++; POLL(); }} while (0)\n")
         write_if_changed(out / f"{prefix}_functions.h",
-                         f'#include "../../runtime/cpu.h"\nextern uint32_t {prefix}_code, {prefix}_section[], {prefix}_import[];\n'
+                         f'#include "../../runtime/modules.h"\nextern uint32_t {prefix}_code, {prefix}_section[], {prefix}_import[];\n'
                          f"{counter}{declarations}\n")
         written, unknown = write_groups(program, functions, addresses, fast, out, prefix=prefix)
     finally:
@@ -932,9 +954,11 @@ def write_modules(found, out, exports, program_starts, module_counts=None):
     """Every module the title loads at run time as native code, where it can be prepared.
     `module_counts` is {module name: {offset: runs}} when building in two tiers."""
     prefixes = []
+    between = links_between(found)
     for number, (_, module) in enumerate(found):
         counts = None if module_counts is None else module_counts.get(module.name, {})
-        prefix = emit_module(module, number, out, exports, program_starts, counts)
+        extra = between.get(module.module_id, ()) if module.kind == "rel" else ()
+        prefix = emit_module(module, number, out, exports, program_starts, counts, extra)
         if prefix is None:
             for stale in out.glob(f"m{number}_*"):
                 stale.unlink()

@@ -205,7 +205,7 @@ def parse_rel(name, data):
     its own sections, 0 for the program at fixed addresses, and any other number for
     another REL. Each list steers through the module with R_DOLPHIN_SECTION (start of a
     section) and offsets from the entry before. Relocations into other RELs are kept in
-    `external`, by module number, for the translator to turn down.
+    `external`, with (module number, section) as the symbol.
     """
     if len(data) < 0x40:
         return None
@@ -304,6 +304,11 @@ class Prepared:
     relocated_words: set      # code offsets the linker writes, left out of the identity check
     check: int                # FNV-1a 64 over every other code word
     fixed_calls: dict = field(default_factory=dict)  # import number -> the program address it calls
+    # A REL's branches into other RELs: import number -> the code offset of the branch. The
+    # game's linker points each at the other module once that is loaded, and back at the
+    # module's own _unresolved when it goes, so the target is read from the branch itself
+    # each time it's taken, as the processor does.
+    linked_calls: dict = field(default_factory=dict)
 
 
 def fnv64(words):
@@ -326,7 +331,8 @@ def patch_branch(code, at, address, target, name):
     struct.pack_into(">I", code, at, (word & 0xfc000003) | (distance & 0x3fffffc))
 
 
-def prepare(module, base, import_base):
+def prepare(module, base, import_base, extra_starts=()):
+    """`extra_starts` are code offsets other modules branch or point to."""
     section = module.code_section()
     start, size = module.sections[section]
     if import_base < base + size:  # Each branch checks it can reach them.
@@ -364,11 +370,9 @@ def prepare(module, base, import_base):
         else:
             raise Unsupported(f"{module.name}: relocation type {reloc.kind} in code isn't handled")
 
-    if module.kind == "rel" and module.external:
-        others = sorted({r.symbol[0] for r in module.external})
-        raise Unsupported(f"{module.name}: links against other modules ({', '.join(map(str, others))}), not handled yet")
+    starts.update(base + offset for offset in extra_starts if 0 <= offset < size)
     pending_ha, pending_lo = {}, {}
-    for reloc in module.external:
+    for reloc in module.external if module.kind != "rel" else ():
         at = reloc.offset - start
         if not 0 <= at < size:
             raise Unsupported(f"{module.name}: an import is used outside the code at {reloc.offset:#x}")
@@ -386,7 +390,24 @@ def prepare(module, base, import_base):
         if symbol not in import_sites and (symbol, addend) in pending_lo:
             import_sites[symbol] = ("pair", high & ~3, pending_lo[(symbol, addend)] & ~3, addend)
     fixed_calls = prepare_fixed(module, base, import_base, code, start, size, import_sites, relocated)
-    missing = [module.imports[i] for i in {r.symbol for r in module.external} if i not in import_sites]
+    linked_calls = {}
+    for reloc in module.external if module.kind == "rel" else ():
+        at = reloc.offset - start
+        if not 0 <= at < size:
+            continue  # In the module's data: read at run time, like any other data.
+        relocated.add(at & ~3)
+        if reloc.kind == REL24:
+            number = len(module.imports) + len(fixed_calls) + len(linked_calls)
+            linked_calls[number] = at
+            patch_branch(code, at, base + at, import_base + number * 4, module.name)
+        elif reloc.kind in halves:
+            # Whichever half it is, the linker works it out: the instruction's own
+            # immediate is read when it runs.
+            fields[base + (at & ~3)] = ("linked", None, None, at & ~3)
+        else:
+            raise Unsupported(f"{module.name}: relocation type {reloc.kind} against another module isn't handled")
+    used = {r.symbol for r in module.external} if module.kind != "rel" else set()
+    missing = [module.imports[i] for i in used if i not in import_sites]
     if missing:
         raise Unsupported(f"{module.name}: no way to read where these imports went: {', '.join(missing)}")
 
@@ -396,7 +417,7 @@ def prepare(module, base, import_base):
     original = struct.unpack(f">{size // 4}I", module.data[start:start + (size & ~3)])
     check = fnv64(word for index, word in enumerate(original) if index * 4 not in relocated)
     return Prepared(module, section, base, bytes(code), import_base, fields, starts, import_sites, relocated, check,
-                    fixed_calls)
+                    fixed_calls, linked_calls)
 
 
 def prepare_fixed(module, base, import_base, code, start, size, import_sites, relocated):
