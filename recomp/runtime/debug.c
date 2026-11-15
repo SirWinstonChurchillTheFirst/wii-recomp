@@ -78,7 +78,10 @@ void stage_frame(float gap_ms) {
   // WII_RECOMP_FRAME_LOG=2 adds how long the game's thread waited with nothing to do in
   // that frame: what's left of a capped frame, so machines can be compared under the cap.
   if (frame_log < 0) frame_log = getenv("WII_RECOMP_FRAME_LOG") ? atoi(getenv("WII_RECOMP_FRAME_LOG")) : 0;
-  if (frame_log == 2) fprintf(stderr, "frame %.2f idle %.2f\n", (double)gap_ms, stage_ticks[STAGE_IDLE] / 60750.0);
+  if (frame_log == 2) {
+    fprintf(stderr, "frame %.2f idle %.2f present %.2f\n", (double)gap_ms, stage_ticks[STAGE_IDLE] / 60750.0,
+            stage_ticks[STAGE_PRESENT] / 60750.0);
+  }
   else if (frame_log) fprintf(stderr, "frame %.2f\n", (double)gap_ms);
   static long switches_before;
   struct rusage usage;
