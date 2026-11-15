@@ -15,6 +15,7 @@ void guest_time_base_set(int high_half, uint32_t value) {}
 void decrementer_set(uint32_t value) { last_decrementer = value; }
 uint32_t decrementer_get(void) { return 99; }
 void locked_cache_transfer(void) {}
+void graphics_pipe_reset(void) {}
 void poll_interrupts(void) { interrupt_budget = 0; polls++; }
 void interrupts_turned_on(void) {}
 void system_call(uint32_t address) { system_calls++; system_call_at = address; }

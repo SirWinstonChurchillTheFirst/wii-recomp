@@ -16,6 +16,9 @@ int files_system_setting(const char *name, uint8_t *out, size_t limit) {
   return 4;
 }
 
+// The boot ROM fonts build_file.py embeds; none here.
+const unsigned char data_font_western[1], data_font_japanese[1];
+const unsigned data_font_western_bytes, data_font_japanese_bytes;
 #include "exi.c"
 
 enum { EXI = 0xcd006800u, CLOCK_CHIP = 2u << 7, BUFFER = 0x80001000u };

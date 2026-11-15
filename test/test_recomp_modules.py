@@ -168,11 +168,19 @@ class RelModules(unittest.TestCase):
         self.assertIn("m1_section[2] + 0x10u", text)
         self.assertIn("0x80450000", text)
 
-    def test_links_to_other_modules_are_left_to_the_interpreter(self):
+    def test_links_to_other_modules_are_read_where_the_linker_put_them(self):
         data = bytearray(made_up_rel())
         struct.pack_into(">I", data, 0x2e8, 9)  # The program's list now points into module 9.
-        with self.assertRaises(modules.Unsupported):
-            modules.prepare(modules.parse_module("rel", bytes(data)), 0xc0000000, 0xc1000000)
+        module = modules.parse_module("rel", bytes(data))
+        self.assertTrue(module.external)
+        prepared = modules.prepare(module, 0xc0000000, 0xc1000000)
+        # A branch into module 9 gets a stand-in whose target is read from the linked
+        # branch as it runs; an address half, from the immediate the linker wrote.
+        linked_fields = [f for f in prepared.fields.values() if f[0] == "linked"]
+        self.assertTrue(prepared.linked_calls or linked_fields)
+        for number, at in prepared.linked_calls.items():
+            self.assertIn(at & ~3, prepared.relocated_words)
+            self.assertGreaterEqual(number, len(module.imports))
 
     def test_yaz0(self):
         # "abc" as literals, then a copy of 6 from 3 back: "abcabcabc".
