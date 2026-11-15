@@ -51,6 +51,7 @@ void files_start(const char *folder);
 void files_save_path(const char *path, char *out, unsigned long size);
 int files_storage_path(const char *path, char *out, unsigned long size);
 void files_make_parents(const char *full);
+void files_remove_tree(const char *full);  // A file or folder in the save folder, and all inside it.
 // Writes a whole host file so a power cut leaves the old one or the new one. 1 if written.
 int files_write_whole(const char *full, const void *data, size_t bytes);
 // A fixed-size value from the console settings (SYSCONF), such as IPL.CB. Its size, or 0.

@@ -134,7 +134,28 @@ static void next_device_calls(void);
 
 static Packet packets[MAX_PACKETS];
 static int packet_count;
-static uint32_t waiting_events, waiting_data;  // Requests held open until there's something to send.
+// Reads the game keeps open until there's something to send, in the order it made them. IOS
+// queues them; a program may keep several open at once (Mario Party 9 does), and with room
+// for only one each new read replaced the last, which then never came back and stalled its
+// Bluetooth stack: no remote input at all.
+enum { MAX_WAITING = 64 };
+typedef struct { uint32_t requests[MAX_WAITING]; int count; } Waiting;
+static Waiting waiting_events, waiting_data;
+
+static void wait_for(Waiting *queue, uint32_t request) {
+  for (int i = 0; i < queue->count; i++) if (queue->requests[i] == request) return;  // Already open.
+  if (queue->count == MAX_WAITING) {
+    gap_hit("limit.bluetooth_reads_open", request);
+    return;
+  }
+  queue->requests[queue->count++] = request;
+}
+
+static uint32_t take_waiting(Waiting *queue) {
+  uint32_t request = queue->requests[0];
+  memmove(queue->requests, queue->requests + 1, (size_t)--queue->count * sizeof queue->requests[0]);
+  return request;
+}
 static Event events[MAX_EVENTS];
 static int event_count;
 
@@ -147,12 +168,11 @@ static void vector_at(uint32_t request, uint32_t index, uint32_t *address, uint3
 }
 
 static void send_events(void) {
-  while (waiting_events && event_count) {
-    uint32_t address, bytes;
-    vector_at(waiting_events, 2, &address, &bytes);
+  while (waiting_events.count && event_count) {
+    uint32_t address, bytes, request = take_waiting(&waiting_events);
+    vector_at(request, 2, &address, &bytes);
     for (uint32_t i = 0; i < events[0].size && i < bytes; i++) wr8(guest(address) + i, events[0].bytes[i]);
-    ios_complete(waiting_events, (int)events[0].size);
-    waiting_events = 0;
+    ios_complete(request, (int)events[0].size);
     memmove(events, events + 1, (size_t)--event_count * sizeof events[0]);
   }
 }
@@ -182,9 +202,9 @@ static int is_data_report(const Packet *packet) {
 
 // Data from the remote to the game.
 static void send_data(void) {
-  while (waiting_data && packet_count) {
-    uint32_t address, bytes;
-    vector_at(waiting_data, 2, &address, &bytes);
+  while (waiting_data.count && packet_count) {
+    uint32_t address, bytes, request = take_waiting(&waiting_data);
+    vector_at(request, 2, &address, &bytes);
     for (uint32_t i = 0; i < packets[0].size && i < bytes; i++) wr8(guest(address) + i, packets[0].bytes[i]);
     if (getenv("WII_RECOMP_BLUETOOTH_LOG") && is_data_report(&packets[0])) {
       static uint8_t delivered[2];
@@ -194,8 +214,11 @@ static void send_data(void) {
         delivered[1] = packets[0].bytes[11];
       }
     }
-    ios_complete(waiting_data, (int)packets[0].size);
-    waiting_data = 0;
+    if (getenv("WII_RECOMP_BLUETOOTH_LOG")) {
+      static unsigned delivered_count;
+      if (++delivered_count % 200 == 0) fprintf(stderr, "bluetooth: %u data packets delivered, %d reads open\n", delivered_count, waiting_data.count);
+    }
+    ios_complete(request, (int)packets[0].size);
     memmove(packets, packets + 1, (size_t)--packet_count * sizeof packets[0]);
   }
 }
@@ -576,7 +599,7 @@ void bluetooth_register_remote(uint8_t *settings, size_t bytes) {
 // The game closed the chip's handle. The transfers it held are dropped unanswered, as
 // Dolphin drops them, so no event is written into memory the game has moved on from.
 void bluetooth_closed(void) {
-  waiting_events = waiting_data = 0;
+  waiting_events.count = waiting_data.count = 0;
 }
 
 int bluetooth_request(uint32_t command, uint32_t request) {
@@ -590,12 +613,12 @@ int bluetooth_request(uint32_t command, uint32_t request) {
   vector_at(request, 0, &endpoint_address, &ignored);
   int endpoint = (int)rd8(guest(endpoint_address));
   if (code == USB_INTERRUPT && endpoint == ENDPOINT_EVENTS) {
-    waiting_events = request;
+    wait_for(&waiting_events, request);
     send_events();
     return IOS_NO_REPLY;
   }
   if (code == USB_BULK && endpoint == ENDPOINT_DATA_IN) {
-    waiting_data = request;
+    wait_for(&waiting_data, request);
     send_data();
     return IOS_NO_REPLY;
   }
