@@ -151,6 +151,34 @@ int files_system_setting(const char *name, uint8_t *out, size_t limit) {
   return 0;
 }
 
+// Changes a one-byte item of the system settings file in the save folder, before a game
+// has opened it. 1 if the item is there and now holds the value.
+int files_system_setting_set(const char *name, uint8_t value) {
+  char full[MAX_PATH];
+  uint8_t data[0x4000];
+  size_t bytes = 0, length = strlen(name);
+  if (!files_find(SETTINGS_FILE, full, sizeof full)) return 0;
+  FILE *file = fopen(full, "rb");
+  if (file) {
+    bytes = fread(data, 1, sizeof data, file);
+    fclose(file);
+  }
+  if (bytes < 6) return 0;
+  unsigned count = (unsigned)data[4] << 8 | data[5];
+  for (unsigned i = 0; i < count && 8 + 2 * i <= bytes; i++) {
+    size_t at = (size_t)data[6 + 2 * i] << 8 | data[7 + 2 * i];
+    if (at >= bytes || (size_t)(data[at] & 0x1f) + 1 != length || at + 2 + length > bytes) continue;
+    if ((data[at] >> 5) != 3 && (data[at] >> 5) != 7) continue;  // A byte or a bool.
+    if (memcmp(data + at + 1, name, length)) continue;
+    if (data[at + 1 + length] == value) return 1;
+    data[at + 1 + length] = value;
+    files_save_path(SETTINGS_FILE, full, sizeof full);
+    files_make_parents(full);
+    return files_write_whole(full, data, bytes);
+  }
+  return 0;
+}
+
 // Reads a file in, into a free slot. 0 when it can't be read.
 static Contents *load_contents(const char *path, const char *full) {
   Contents *loaded = 0;

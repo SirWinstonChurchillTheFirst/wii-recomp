@@ -56,6 +56,7 @@ void files_remove_tree(const char *full);  // A file or folder in the save folde
 int files_write_whole(const char *full, const void *data, size_t bytes);
 // A fixed-size value from the console settings (SYSCONF), such as IPL.CB. Its size, or 0.
 int files_system_setting(const char *name, uint8_t *out, size_t limit);
+int files_system_setting_set(const char *name, uint8_t value);  // A byte item, before a game opens the file.
 void files_make_title_folders(uint64_t title);  // Its content and data folders, as launching makes them.
 int files_find(const char *path, char *out, unsigned long size);
 void system_files_make(void);  // What the Wii Menu makes on a new Wii, where storage lacks it.

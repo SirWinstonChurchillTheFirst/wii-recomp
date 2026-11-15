@@ -90,6 +90,9 @@ void console_settings_make(char region) {
   }
   size_t chosen = 3;
   for (size_t i = 0; i < 3; i++) if (region && strchr(regions[i].letters, region)) chosen = i;
+  // Only a European console has the 60 Hz choice (IPL.E60); a game from elsewhere that
+  // finds it on asks for EuRGB60, which its VIConfigure then refuses (Mario Strikers Charged).
+  files_system_setting_set("IPL.E60", chosen == 3);
   uint8_t data[SETTINGS_BYTES] = {0};
   snprintf((char *)data, sizeof data, "AREA=%s\r\nMODEL=%s\r\nDVD=0\r\nMPCH=0x7FFE\r\nCODE=%s\r\nSERNO=000000000\r\nVIDEO=%s\r\nGAME=%s\r\n",
            regions[chosen].area, regions[chosen].model, regions[chosen].code, regions[chosen].video, regions[chosen].game);
