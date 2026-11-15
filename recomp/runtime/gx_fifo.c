@@ -11,6 +11,9 @@
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#undef interface
 #endif
 
 #include "timeline.h"
@@ -316,7 +319,7 @@ static void write_pair(uint32_t low_address, uint32_t value) {
 // FIFO breakpoints needs the chip in step with it, and stays on this thread, as does
 // WII_RECOMP_GX_INLINE=1.
 static int threaded = -1;
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
 #define RING_BYTES (16u * 1024u * 1024u)
 #define EMPTY_TURNS_BEFORE_SLEEP 200
 #define EMPTY_SLEEP_NANOSECONDS 50000
@@ -369,6 +372,7 @@ static void *commands_thread(void *unused) {
 
 // Memory with no name in the file system, to map twice. macOS has no memfd_create, so it
 // takes shared memory under a name, and drops the name at once.
+#ifndef _WIN32
 static int ring_file(void) {
 #ifdef __APPLE__
   char name[32];
@@ -380,8 +384,41 @@ static int ring_file(void) {
   return memfd_create("wii-recomp-commands", 0);
 #endif
 }
+#endif
+
+#ifdef _WIN32
+// Windows maps a section twice in a row through placeholders (Windows 10 1803 on): a
+// reservation split in two, each half replaced by a view of the same memory. The calls
+// are looked up at run time, so an older Windows runs the commands on the game's thread.
+typedef PVOID (WINAPI *VirtualAlloc2Call)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef PVOID (WINAPI *MapViewOfFile3Call)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
+#define PLACEHOLDER_RESERVE 0x00040000u   // MEM_RESERVE_PLACEHOLDER
+#define PLACEHOLDER_REPLACE 0x00004000u   // MEM_REPLACE_PLACEHOLDER
+#define PLACEHOLDER_PRESERVE 0x00000002u  // MEM_PRESERVE_PLACEHOLDER
+
+static uint8_t *map_ring_twice(void) {
+  HMODULE kernel = GetModuleHandleA("kernelbase.dll");
+  VirtualAlloc2Call reserve = kernel ? (VirtualAlloc2Call)(void *)GetProcAddress(kernel, "VirtualAlloc2") : 0;
+  MapViewOfFile3Call view = kernel ? (MapViewOfFile3Call)(void *)GetProcAddress(kernel, "MapViewOfFile3") : 0;
+  if (!reserve || !view) return 0;
+  HANDLE section = CreateFileMappingA(INVALID_HANDLE_VALUE, 0, PAGE_READWRITE, 0, RING_BYTES, 0);
+  if (!section) return 0;
+  uint8_t *both = reserve(0, 0, RING_BYTES * 2, MEM_RESERVE | PLACEHOLDER_RESERVE, PAGE_NOACCESS, 0, 0);
+  if (!both || !VirtualFree(both, RING_BYTES, MEM_RELEASE | PLACEHOLDER_PRESERVE)
+      || !view(section, GetCurrentProcess(), both, 0, RING_BYTES, PLACEHOLDER_REPLACE, PAGE_READWRITE, 0, 0)
+      || !view(section, GetCurrentProcess(), both + RING_BYTES, 0, RING_BYTES, PLACEHOLDER_REPLACE, PAGE_READWRITE, 0, 0)) {
+    fprintf(stderr, "graphics: no ring of commands (error %lu), so they run on the game's thread\n", GetLastError());
+    return 0;
+  }
+  return both;
+}
+#endif
 
 static int start_commands_thread(void) {
+#ifdef _WIN32
+  uint8_t *both = map_ring_twice();
+  if (!both) return 0;
+#else
   int file = ring_file();
   if (file < 0 || ftruncate(file, RING_BYTES)) return 0;
   uint8_t *both = mmap(0, RING_BYTES * 2, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -389,6 +426,7 @@ static int start_commands_thread(void) {
       || mmap(both + RING_BYTES, RING_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, file, 0) == MAP_FAILED) {
     return 0;
   }
+#endif
   ring = both;
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);

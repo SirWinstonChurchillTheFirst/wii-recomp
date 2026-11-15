@@ -45,5 +45,5 @@ shaderc, the C++ runtime), until they're copied beside it.
 
 - The network (`net_win.c` answers that there's no link).
 - Real Wii Remotes (`remote_link_win.c` is empty; the simulated remote is used).
-- Graphics commands on a thread of their own (`gx_fifo.c` runs them on the game's).
+- (Done) Graphics commands run on a thread of their own, through a ring mapped twice with placeholders.
 - The Wii Menu's hand-over between titles, which uses `exec`.
