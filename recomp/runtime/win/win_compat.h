@@ -26,4 +26,13 @@ void *memmem(const void *hay, size_t hay_bytes, const void *needle, size_t needl
 #define fsync(descriptor) _commit(descriptor)
 #define rename(from, to) win_rename(from, to)
 int win_rename(const char *from, const char *to);  // Replaces `to`, as on POSIX.
+
+// Short sleeps: mingw's nanosleep rounds up to Windows' timer, a millisecond at best and
+// 15.6 by default, which turned the commands thread's 50 µs naps and the game's idle waits
+// into lost frames. A high-resolution waitable timer sleeps for what's asked (Windows 10
+// 1803 on), with the system timer at 1 ms as the fallback.
+#include <time.h>
+#include <pthread.h>
+#define nanosleep(request, remaining) win_nanosleep(request, remaining)
+int win_nanosleep(const struct timespec *request, struct timespec *remaining);
 #endif

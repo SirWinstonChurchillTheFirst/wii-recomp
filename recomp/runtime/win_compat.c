@@ -2,6 +2,7 @@
 // win/sys/mman.h), and the fixed memory that holds the processor state there (cpu.h).
 #ifdef _WIN32
 #include <windows.h>
+#include <mmsystem.h>
 #undef interface
 #include <errno.h>
 #include <fcntl.h>
@@ -97,6 +98,31 @@ void *memmem(const void *hay, size_t hay_bytes, const void *needle, size_t needl
   for (; hay_bytes >= needle_bytes; at++, hay_bytes--) {
     if (*at == *(const uint8_t *)needle && !memcmp(at, needle, needle_bytes)) return (void *)at;
   }
+  return 0;
+}
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+int win_nanosleep(const struct timespec *request, struct timespec *remaining) {
+  static _Thread_local HANDLE timer;
+  static _Thread_local int tried;
+  if (remaining) remaining->tv_sec = 0, remaining->tv_nsec = 0;
+  long long hundreds = (long long)request->tv_sec * 10000000 + request->tv_nsec / 100;
+  if (hundreds <= 0) { SwitchToThread(); return 0; }
+  if (!tried) {
+    tried = 1;
+    timer = CreateWaitableTimerExW(0, 0, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer) {  // Older Windows: an ordinary timer, with the system's period at 1 ms.
+      static LONG once;
+      if (!InterlockedExchange(&once, 1)) timeBeginPeriod(1);
+      timer = CreateWaitableTimerExW(0, 0, 0, TIMER_ALL_ACCESS);
+    }
+  }
+  LARGE_INTEGER due;
+  due.QuadPart = -hundreds;  // Relative, in 100 ns steps.
+  if (!timer || !SetWaitableTimer(timer, &due, 0, 0, 0, FALSE)) { Sleep((DWORD)((hundreds + 9999) / 10000)); return 0; }
+  WaitForSingleObject(timer, INFINITE);
   return 0;
 }
 
