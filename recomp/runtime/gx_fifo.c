@@ -540,7 +540,9 @@ static void pump(void) {
   uint32_t read = read_pair(CP_FIFO_READ), write = read_pair(CP_FIFO_WRITE);
   uint32_t limit = ring_limit(end);
   if (title->fifo_breakpoints) check_fifo_marks(control, read_pair(CP_FIFO_READ), read_pair(CP_FIFO_WRITE), limit - base);
-  int breaking = title->fifo_breakpoints && (control & CONTROL_BREAK_ENABLE);
+  // A game that turns breakpoints on wants them: honoured whenever the chip runs on the
+  // game's thread, as it always does on Windows, not only in games built to keep frames apart.
+  int breaking = (title->fifo_breakpoints || threaded == 0) && (control & CONTROL_BREAK_ENABLE);
   uint32_t breakpoint = read_pair(CP_BREAKPOINT);
   if (at_breakpoint || held_at_token || resume_state != RUNNING) return;  // Bursts from the CPU land here too.
   if (threaded < 0) threaded = !title->fifo_breakpoints && !getenv("WII_RECOMP_GX_INLINE") && start_commands_thread();
@@ -662,6 +664,8 @@ void gx_stream_report(void) {
   fprintf(stderr, "stream: %u bytes waiting, control %x, read %x, write %x, cpu write %x:", stream_used,
           hw_peek(CP_CONTROL, 2), read_pair(CP_FIFO_READ), read_pair(CP_FIFO_WRITE), hw_peek(PI_FIFO_WRITE, 4));
   for (uint32_t i = 0; i < 24 && i < stream_used; i++) fprintf(stderr, " %02x", stream[i]);
+  fprintf(stderr, "\n  held: at breakpoint %d, at token %d (seen %d, retraces %d, paces by token %d), resume state %d, threaded %d",
+          at_breakpoint, held_at_token, token_seen, retraces_held, paces_by_token, (int)resume_state, threaded);
   fprintf(stderr, "\n  the CPU's write pipe holds %u bytes not yet sent:", burst_used);
   for (uint32_t i = 0; i < burst_used; i++) fprintf(stderr, " %02x", burst[i]);
   fprintf(stderr, "\n  vertex format %x %x, needs %u for one vertex of format 0\n", gx.cp[0x50], gx.cp[0x60], gx_vertices_size(0, 1));
@@ -719,6 +723,12 @@ int graphics_write(uint32_t address, uint32_t value, int bytes) {
     pe_enabled = value & PE_ENABLE_BITS;
     pe_status &= ~(value & (PE_TOKEN_DONE | PE_FINISH_DONE));
     if (value & PE_TOKEN_DONE) clear_irq(IRQ_PE_TOKEN);
+    // The SDK's handler acknowledges the token's interrupt once it has read the value and
+    // run the game's draw-sync callback. While the chip is held at that token the value
+    // can't have moved on, so the game has seen it. Games that pace frames through the
+    // callback alone (Mario Power Tennis) never read the token otherwise, and would wait
+    // out the hold's last resort, a frame every two seconds.
+    if ((value & PE_TOKEN_DONE) && held_at_token && !atomic_load(&token_due)) token_seen = 1;
     if (value & PE_FINISH_DONE) clear_irq(IRQ_PE_FINISH);
     return 1;
   }
