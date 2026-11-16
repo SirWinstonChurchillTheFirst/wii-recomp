@@ -39,6 +39,7 @@ This project is licensed under the GNU General Public License, version 3 or late
   - Write watching (`recomp/runtime/guest_memory.c`, `memory_watch.h`): a count of writes for each piece of guest memory, which a reader compares to tell that what it read is unchanged, follows `runtime/include/gx_guest_write.h` (`GenerationForRange`, `NotifyWrite`). WiiCompiled counts the game's cache flushes and DMA; here a watched page is made read-only and its first write is counted as it faults, so no flush is needed.
   - Register write counts (`recomp/runtime/gx_vertex.c`, `gx_draw.c`, `gx_transform.c`; `gx_cp_written`, `gx_settings_written`, `gx_xf_written`): working a vertex format, a draw's stages and shader, and the matrix blocks out once and keeping them until the game writes what they come from follows the vertex state generation in `runtime/src/hle/gx/gx_dl.cpp` (`vtxStateGeneration`).
 - Hermes (BSD-3-Clause): the libasnd sound mixer program that `test/c/test_dsp_lle.c` runs, as Dolphin's `Source/UnitTests/Core/DSP/HermesBinary.cpp` carries it. Its notice is kept in `test/c/dsp_lle_programs.h`.
+- [Treeki](https://github.com/Treeki)'s LHDecompressor (WTFPL, `RandomStuff/LHDecompressor.cpp`): how Nintendo's LZ-with-Huffman compression (type 0x40) is laid out, which `lh_decompress` in `recomp/translate/modules.py` follows to read Mario Sports Mix's modules.
 - [Hector Martin (marcan)](https://github.com/marcan) and others documented the Wii Remote and its attachments.
 - [WiiBrew](https://wiibrew.org) and YAGCD document the hardware.
 

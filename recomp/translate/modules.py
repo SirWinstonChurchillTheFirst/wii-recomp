@@ -101,12 +101,79 @@ def yaz0_decompress(data):
     return bytes(out)
 
 
+def lh_table(data, at, bits):
+    """One of LH's two Huffman trees: a count of four-byte groups, then `bits`-bit entries
+    packed from the high bit down. Returns the entries (entry 0 isn't used) and where the
+    tree ends."""
+    if bits > 8:
+        groups, start = data[at] | data[at + 1] << 8, at + 2
+    else:
+        groups, start = data[at], at + 1
+    end = at + (groups + 1) * 4
+    packed = int.from_bytes(data[start:end], "big")
+    total = (end - start) * 8
+    count = min(total // bits, 2 << bits)
+    mask = (1 << bits) - 1
+    return [0] + [packed >> (total - bits * (n + 1)) & mask for n in range(count)], end
+
+
+def lh_decompress(data):
+    """Nintendo's LZ with Huffman codes, type 0x40 (Mario Sports Mix's .cmp files), after
+    Treeki's LHDecompressor. Returns None for anything that doesn't read as one."""
+    if len(data) < 12 or data[0] != 0x40:
+        return None
+    size, at = data[1] | data[2] << 8 | data[3] << 16, 4
+    if size == 0:
+        size, at = struct.unpack_from("<I", data, 4)[0], 8
+    if size > 64 << 20:
+        return None
+    try:
+        lengths, at = lh_table(data, at, 9)
+        distances, at = lh_table(data, at, 5)
+        place = at * 8  # The next bit of the stream, counted from the file's start, high bits first.
+
+        def symbol(tree, leaf, reach):
+            nonlocal place
+            node = 1
+            while True:
+                entry = tree[node]
+                bit = data[place >> 3] >> (7 - (place & 7)) & 1
+                place += 1
+                following = (node & ~1) + ((entry & reach) + 1) * 2 + bit
+                if entry & (leaf >> bit):
+                    return tree[following]
+                node = following
+
+        out = bytearray()
+        while len(out) < size:
+            value = symbol(lengths, 0x100, 0x7f)
+            if value < 0x100:
+                out.append(value)
+                continue
+            length = (value & 0xff) + 3
+            width = symbol(distances, 0x10, 7)
+            distance = 1 if width else 0
+            for _ in range(width - 1):
+                distance = distance << 1 | (data[place >> 3] >> (7 - (place & 7)) & 1)
+                place += 1
+            distance += 1
+            if distance > len(out):
+                return None
+            for _ in range(min(length, size - len(out))):
+                out.append(out[-distance])
+        return bytes(out)
+    except (IndexError, struct.error, ValueError):
+        return None
+
+
 def decompress(data):
     """The plain bytes of a file stored with any of the compressions modules are found in."""
     if data[:4] == b"Yaz0":
         return yaz0_decompress(data)
     if data[:1] in (b"\x10", b"\x11"):
         return lz_decompress(data) or data
+    if data[:1] == b"@":
+        return lh_decompress(data) or data
     return data
 
 
@@ -371,11 +438,12 @@ def prepare(module, base, import_base, extra_starts=()):
             raise Unsupported(f"{module.name}: relocation type {reloc.kind} in code isn't handled")
 
     starts.update(base + offset for offset in extra_starts if 0 <= offset < size)
-    pending_ha, pending_lo = {}, {}
+    pending_ha, pending_lo, used = {}, {}, set()
     for reloc in module.external if module.kind != "rel" else ():
         at = reloc.offset - start
         if not 0 <= at < size:
-            raise Unsupported(f"{module.name}: an import is used outside the code at {reloc.offset:#x}")
+            continue  # In the module's data, such as a method table: read at run time, like any other data.
+        used.add(reloc.symbol)
         relocated.add(at & ~3)
         if reloc.kind == REL24:
             patch_branch(code, at, base + at, import_base + reloc.symbol * 4, module.name)
@@ -406,7 +474,6 @@ def prepare(module, base, import_base, extra_starts=()):
             fields[base + (at & ~3)] = ("linked", None, None, at & ~3)
         else:
             raise Unsupported(f"{module.name}: relocation type {reloc.kind} against another module isn't handled")
-    used = {r.symbol for r in module.external} if module.kind != "rel" else set()
     missing = [module.imports[i] for i in used if i not in import_sites]
     if missing:
         raise Unsupported(f"{module.name}: no way to read where these imports went: {', '.join(missing)}")

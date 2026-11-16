@@ -811,8 +811,11 @@ def export_addresses(system, functions):
     """
     starts = sorted(functions)
     found = {}
-    for path in sorted((system / "modules").glob("*.sel")):
+    files = system.parent / "files"
+    for path in sorted((system / "modules").glob("*.sel")) + (sorted(files.rglob("*.sel")) if files.is_dir() else []):
         exported = modules.parse_rso(path.stem, path.read_bytes())
+        if not exported:
+            continue
         by_section = {}
         for name, section, value in exported.exports:
             by_section.setdefault(section, []).append((name, value))
@@ -839,15 +842,17 @@ def title_modules(system):
     files = system.parent / "files"
     if files.is_dir():
         for path in sorted(files.rglob("*")):
-            if path.is_file() and (MODULE_FILE.search(path.name) or path.parent.name.lower() in MODULE_FOLDERS):
+            folders = {part.lower() for part in path.relative_to(files).parts[:-1]}
+            if path.is_file() and (MODULE_FILE.search(path.name) or folders & MODULE_FOLDERS):
                 found += [(str(path.relative_to(files)), module) for module in modules.find_modules([(path.name, path.read_bytes())])
-                          if module.kind == "rel"]
+                          if not modules.is_export_list(module)]
     return [(name, module) for name, module in found if module]
 
 
 # A file that holds modules: a .rel or .rso, or an archive of them (RELS.arc and the like).
 # A folder whose files are modules whatever they're called, such as Super Paper Mario's
-# rel/rel.bin. Only files that read as a REL are taken from it.
+# rel/rel.bin, or Mario Sports Mix's Module/Final/*.cmp. Only files that read as a module
+# are taken from it.
 MODULE_FOLDERS = {"rel", "rels", "module", "modules"}
 MODULE_FILE = re.compile(r"\.(rel|rso)(\.[a-z0-9]+)?$|^rels?\b.*\.(arc|szs)$", re.IGNORECASE)
 
@@ -906,6 +911,12 @@ def emit_module(module, number, base, out, exports, program_starts, counts, extr
     import_count = len(module.imports) + len(prepared.fixed_calls) + len(prepared.linked_calls)
     fixed = {imports + 4 * n: address for n, address in prepared.fixed_calls.items()}
     linked = {imports + 4 * n: at for n, at in prepared.linked_calls.items()}
+    # An RSO's call to something the program doesn't export goes to another module, or to
+    # itself. The game links those again whenever a module comes or goes (Mario Sports Mix's
+    # system module calls into whichever sport is loaded), so the branch is read each time.
+    late = {index for index, site in prepared.import_sites.items()
+            if module.kind != "rel" and site[0] == "branch" and module.imports[index] not in exports}
+    linked.update({imports + 4 * index: prepared.import_sites[index][1] for index in late})
     MODULE = {"prefix": prefix, "base": base, "size": len(prepared.code), "imports": imports, "linked": linked,
               "import_count": import_count, "fields": prepared.fields, "fixed": fixed, "program": program_starts}
     counting = counts is not None
@@ -928,6 +939,8 @@ def emit_module(module, number, base, out, exports, program_starts, counts, extr
     for index in range(import_count):
         site = prepared.import_sites.get(index)
         if site is None:
+            sites.append("{0, 0, 0, 0, 0}")
+        elif index in late:
             sites.append("{0, 0, 0, 0, 0}")
         elif site[0] == "branch":
             sites.append(f"{{1, 0x{site[1]:x}u, 0, 0, 0x{exports.get(module.imports[index], 0):x}u}}")
@@ -1136,7 +1149,7 @@ def main():
     # Program functions only its run-time modules call: by name from its export list for
     # RSOs, by address for RELs.
     found = title_modules(dol.parent)
-    exports = export_addresses(dol.parent, functions) if (dol.parent / "modules").is_dir() else {}
+    exports = export_addresses(dol.parent, functions)
     called = module_imports(found) if exports else set()
     program_calls = {a for a in module_program_calls(found) if program.is_code(a)}
     add_starts(program, functions, program_calls)
