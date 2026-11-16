@@ -73,6 +73,18 @@ void stage_add(int stage, uint64_t ticks) {
 
 // WII_RECOMP_FRAME_LOG=1 prints the time since the last frame shown, for each frame, so a
 // tool can tell an even 60 from frames that come in fits (recomp/tools/race_bench.py).
+// With the frame log on, the time since the last picture reached the window: what the
+// eye gets, where "frame" is when the game finished each.
+void stage_shown(void) {
+  static uint64_t last;
+  static int frame_log = -1;
+  if (frame_log < 0) frame_log = getenv("WII_RECOMP_FRAME_LOG") != 0;
+  if (!frame_log) return;
+  uint64_t now = time_base();
+  if (last) fprintf(stderr, "shown %.2f\n", (double)(now - last) / 60750.0);
+  last = now;
+}
+
 void stage_frame(float gap_ms) {
   static int frame_log = -1;
   // WII_RECOMP_FRAME_LOG=2 adds how long the game's thread waited with nothing to do in

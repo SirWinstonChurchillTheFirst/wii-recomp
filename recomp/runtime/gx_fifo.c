@@ -347,6 +347,27 @@ static void wait_briefly(void) {
   nanosleep(&pause, 0);
 }
 
+// The commands thread's wait when there's nothing to parse. A timer on Windows comes due
+// about half a millisecond late however short it's set, and a thread handing work over
+// waited that out each time: Mario Sports Mix touches eight held copies a picture, which
+// cost it every other frame. So there the wait also ends when work is handed over.
+#ifdef _WIN32
+static HANDLE idle_wake;
+static void idle_wait(void) {
+  static HANDLE timer;
+  if (!timer) timer = CreateWaitableTimerExW(0, 0, 2 /* high resolution */, TIMER_ALL_ACCESS);
+  LARGE_INTEGER due;
+  due.QuadPart = -(EMPTY_SLEEP_NANOSECONDS / 100);
+  if (!timer || !idle_wake || !SetWaitableTimer(timer, &due, 0, 0, 0, FALSE)) { wait_briefly(); return; }
+  HANDLE either[2] = {idle_wake, timer};
+  WaitForMultipleObjects(2, either, FALSE, INFINITE);
+}
+static void wake_idle(void) { if (idle_wake) SetEvent(idle_wake); }
+#else
+static void idle_wait(void) { wait_briefly(); }
+static void wake_idle(void) {}
+#endif
+
 static void *commands_thread(void *unused) {
   (void)unused;
   uint64_t parsed = 0;
@@ -355,6 +376,7 @@ static void *commands_thread(void *unused) {
     uint64_t written = atomic_load_explicit(&ring_written, memory_order_acquire);
     uint32_t used = written == parsed ? 0 : parse_one(ring + (parsed & (RING_BYTES - 1)), (uint32_t)(written - parsed));
     run_handed(used != 0);
+    if (gx_backend->show_held) gx_backend->show_held();
     if (used) {
       parsed += used;
       atomic_store_explicit(&ring_parsed, parsed, memory_order_release);
@@ -363,7 +385,7 @@ static void *commands_thread(void *unused) {
       sched_yield();
     } else {
       TIMELINE_BEGIN("no commands");
-      wait_briefly();
+      idle_wait();
       TIMELINE_END("no commands");
     }
   }
@@ -428,9 +450,13 @@ static int start_commands_thread(void) {
   }
 #endif
   ring = both;
+#ifdef _WIN32
+  idle_wake = CreateEventW(0, FALSE, FALSE, 0);
+#endif
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);
   pthread_attr_setstacksize(&attributes, 16u * 1024u * 1024u);
+  gx_shows_held = 1;  // The thread shows a held picture between commands.
   return pthread_create(&commands_thread_id, &attributes, commands_thread, 0) == 0;
 }
 
@@ -452,6 +478,7 @@ static void hand_over(void (*work)(void *), void *argument, int soon) {
   handed.soon = soon;
   atomic_store_explicit(&handed_done, 0, memory_order_relaxed);
   atomic_store_explicit(&handed_waiting, 1, memory_order_release);
+  wake_idle();
   while (!atomic_load_explicit(&handed_done, memory_order_acquire)) sched_yield();
   atomic_flag_clear_explicit(&handing, memory_order_release);
 }

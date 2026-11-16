@@ -115,6 +115,9 @@ typedef struct {
   void (*copy_depth)(GxTexture *to, const GxRectangle *from, int width, int height);
 
   void (*present)(const GxRectangle *from);
+  // A backend may hold a finished picture back until the screen's field is over. Then the
+  // commands thread calls this between commands, to show it once it's due. May be 0.
+  void (*show_held)(void);
 
   // Reading pictures back to the processor, for copies that land in memory and EFB peeks.
   // Each read starts in order after the work sent before it and gives a ticket, 0 if it
@@ -171,6 +174,7 @@ void gx_recipe_note(GxShader shader, const GxRenderState *state);
 void gx_recipes_start(void);
 
 extern const GxBackend *gx_backend;
+extern int gx_shows_held;  // Set once something calls show_held between commands, so a backend may hold pictures.
 extern const GxBackend gx_backend_opengl, gx_backend_vulkan;
 
 // Picks from WII_RECOMP_RENDERER (opengl or vulkan), once GLFW has started.

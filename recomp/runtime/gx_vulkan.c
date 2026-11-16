@@ -9,7 +9,9 @@
 #include <string.h>
 
 #include "gx_vulkan.h"
+#include "debug.h"
 #include "timeline.h"
+#include "vi.h"
 
 #define EFB_PIXEL_WIDTH (EFB_WIDTH * EFB_SCALE)
 #define EFB_PIXEL_HEIGHT (EFB_HEIGHT * EFB_SCALE)
@@ -777,10 +779,12 @@ static VkRect2D clip_to_efb(const GxRectangle *area) {
   int right = (area->x + area->width) * EFB_SCALE, bottom = (area->y + area->height) * EFB_SCALE;
   if (left < 0) left = 0;
   if (top < 0) top = 0;
+  if (right < 0) right = 0;
+  if (bottom < 0) bottom = 0;
   if (right > EFB_PIXEL_WIDTH) right = EFB_PIXEL_WIDTH;
   if (bottom > EFB_PIXEL_HEIGHT) bottom = EFB_PIXEL_HEIGHT;
-  if (right < left) right = left;
-  if (bottom < top) bottom = top;
+  if (left > right) left = right;  // A rectangle wholly past the picture ends up empty at its edge, not outside it.
+  if (top > bottom) top = bottom;
   return (VkRect2D){{left, top}, {(uint32_t)(right - left), (uint32_t)(bottom - top)}};
 }
 
@@ -1638,7 +1642,53 @@ static void hand_picture_over(Frame *frame) {
   vk_picture_sink(picture_ring.mapped, (int)picture_size.width, (int)picture_size.height);
 }
 
+// A Wii shows a finished picture when the screen next starts a field, so a game whose
+// frames take turns being long and short (Mario Sports Mix: 10 ms, then 3) still shows
+// one every field. Shown as each is finished, they came 9 and 24 ms apart, which a
+// screen faster than the game's 60 Hz shows as judder. So a picture finished less than a
+// field after the last one was shown is held until that field is over: the commands
+// thread shows it (show_held) while it goes on with the next frame's work. A picture that
+// comes later is shown at once, as is one whose window changed, and the next picture
+// shows a held one first. WII_RECOMP_SHOW_AT_ONCE=1 shows each as it's finished, as before.
+static struct { int waiting; uint32_t image; uint64_t due; } held_show;
+static uint64_t last_shown;
+static int shown_outdated;
+
+static uint64_t host_nanoseconds(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static void show_now(uint64_t when) {
+  if (!held_show.waiting) return;
+  held_show.waiting = 0;
+  VkPresentInfoKHR info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &vk.swap_done[held_show.image],
+                           .swapchainCount = 1, .pSwapchains = &vk.swapchain, .pImageIndices = &held_show.image};
+  VkResult presented = vkQueuePresentKHR(vk.queue, &info);
+  shown_outdated |= presented == VK_SUBOPTIMAL_KHR || presented == VK_ERROR_OUT_OF_DATE_KHR;
+  last_shown = when ? when : host_nanoseconds();
+  stage_shown();
+}
+
+static void show_held(void) {
+  // Counted from when it was due, not when this got round to it, so lateness doesn't add up.
+  if (held_show.waiting && host_nanoseconds() >= held_show.due) show_now(held_show.due);
+}
+
+static void show_or_hold(uint32_t image, int at_once) {
+  static int off = -1;
+  if (off < 0) off = getenv("WII_RECOMP_SHOW_AT_ONCE") != 0;
+  double rate = vi_field_rate();
+  uint64_t field = (uint64_t)(1e9 / (rate > 1 ? rate : 60.0)), now = host_nanoseconds();
+  held_show.waiting = 1;
+  held_show.image = image;
+  held_show.due = last_shown + field;
+  if (off || at_once || !gx_shows_held || !last_shown || held_show.due <= now) show_now(0);
+}
+
 static void present(const GxRectangle *from) {
+  show_now(0);  // A picture still held gives way to this one.
   flush_run();  // Strips gathered so far go first.
   record_reads();
   give_up_layer();
@@ -1674,10 +1724,9 @@ static void present(const GxRectangle *from) {
     blit_to_window(frame->draw, image_index, from);
     mark("to window", 0, 0);
     vk_frame_submit(frame, frame->image_ready, vk.swap_done[image_index]);
-    VkPresentInfoKHR info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &vk.swap_done[image_index],
-                             .swapchainCount = 1, .pSwapchains = &vk.swapchain, .pImageIndices = &image_index};
-    VkResult presented = vkQueuePresentKHR(vk.queue, &info);
-    outdated |= presented == VK_SUBOPTIMAL_KHR || presented == VK_ERROR_OUT_OF_DATE_KHR;
+    show_or_hold(image_index, outdated || !vk_swapchain_matches_window());
+    outdated |= shown_outdated;
+    shown_outdated = 0;
   } else {
     vk_frame_submit(frame, VK_NULL_HANDLE, VK_NULL_HANDLE);
   }
@@ -2471,6 +2520,7 @@ const GxBackend gx_backend_vulkan = {
   .copy_color = copy_color,
   .copy_depth = copy_depth,
   .present = present,
+  .show_held = show_held,
   .read_texture = read_texture,
   .read_picture = read_picture,
   .expect_read = expect_read,

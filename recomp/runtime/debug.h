@@ -5,6 +5,7 @@
 enum { STAGE_STREAM, STAGE_PRESENT, STAGE_DISC, STAGE_AUDIO, STAGE_IDLE, STAGE_COUNT };
 void stage_add(int stage, uint64_t ticks);
 void stage_frame(float gap_ms);
+void stage_shown(void);  // A picture reached the window, which can be later than the frame that made it.
 
 void debug_threads(void);
 extern volatile int debug_threads_now;  // Set by the control pipe's "threads": listed once, soon.
