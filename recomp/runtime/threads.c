@@ -233,6 +233,10 @@ static void read_registers(uint32_t c) {
   xer_set(rd32(c + CONTEXT_XER));
   cpu.msr = rd32(c + CONTEXT_SRR1);
   for (int i = 0; i < 8; i++) cpu.spr[GQR_BASE + i] = rd32(c + CONTEXT_GQR + i * 4);
+  if (cpu.msr & 0x8000u) {  // As rfi does: one waiting is taken next.
+    void interrupts_turned_on_soon(void);
+    interrupts_turned_on_soon();
+  }
 }
 
 // A context that has never run starts its code on a new stack. If that code

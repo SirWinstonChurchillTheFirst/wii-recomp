@@ -100,8 +100,21 @@ void decrementer_set(uint32_t value) {
 
 uint32_t decrementer_get(void) { return (uint32_t)(decrementer_deadline - time_base()); }
 
+// One waiting, or a timer that ran out while interrupts were off, is taken right here, as
+// the processor takes it the moment mtmsr turns them on. Mario & Sonic at the London 2012
+// Olympic Games keeps two threads waking each other, with interrupts off nearly all the
+// time and on only between two instructions: an interrupt left for the next check found
+// them off again, and the frames that waited on it came every other retrace, at 30 fps.
+static int something_due(void) { return irq_pending() || (decrementer_armed && time_base() >= decrementer_deadline); }
+
 void interrupts_turned_on(void) {
-  if (irq_pending()) interrupt_budget = 0;
+  if (something_due()) poll_interrupts();
+}
+
+// The same for a context loaded with interrupts on (threads.c), which is still on the old
+// thread's host stack: taken at the next check, which is on the new one.
+void interrupts_turned_on_soon(void) {
+  if (something_due()) interrupt_budget = 0;
 }
 
 static unsigned long long interrupts_taken, interrupt_polls, interrupt_polls_masked;

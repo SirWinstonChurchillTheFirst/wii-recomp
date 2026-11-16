@@ -24,8 +24,8 @@ void debug_threads(void) {
           hw_read(0xcc003004u, 4), cpu.msr, rd32(0x800000c4), rd32(0x800000c8), hw_read(0xcc00100au, 2));
   for (int n = 0; n < MAX_THREADS && is_guest(thread); n++) {
     uint32_t stack = rd32(thread + 4);
-    fprintf(stderr, "thread %08x state %u pc %08x link %08x calls:", thread, rd16(thread + THREAD_STATE),
-            rd32(thread + CONTEXT_SRR0), rd32(thread + CONTEXT_LR));
+    fprintf(stderr, "thread %08x state %u priority %d (base %d) pc %08x link %08x calls:", thread, rd16(thread + THREAD_STATE),
+            (int)rd32(thread + 0x2d0), (int)rd32(thread + 0x2d4), rd32(thread + CONTEXT_SRR0), rd32(thread + CONTEXT_LR));
     for (int depth = 0; depth < STACK_DEPTH && is_guest(stack); depth++) {
       fprintf(stderr, " %08x", rd32(stack + 4));
       stack = rd32(stack);
