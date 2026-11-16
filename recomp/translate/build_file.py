@@ -27,9 +27,11 @@ CLANG = (MSYS2 / "bin/clang.exe").as_posix() if WINDOWS else "clang"
 # Arm's C leaves char unsigned and merges multiply-adds, both unlike the Intel Mac.
 FLAGS = "-w -fno-strict-aliasing -fwrapv -fsigned-char -ffp-contract=off " + ("-I../runtime/win" if WINDOWS else "-I/usr/local/include") + (f" -I{VULKAN_SDK}/include" if VULKAN_SDK else "")
 GAME_OPTIMIZATION = "-O2"
-# The quick tier (emit.py --profile): code that has barely run, compiled about five times
-# faster than GAME_OPTIMIZATION and running slower.
-QUICK_OPTIMIZATION = "-O0"
+# The quick tier (emit.py --profile): code that hasn't run in a profiled session yet. It
+# used to be -O0, five times quicker to compile, but code first run in play (a match, a
+# race) then ran so slowly that the game stuttered: Mario Strikers Charged's first match
+# fell to 50 fps. At -O2 a whole game builds in about half a minute on a desktop.
+QUICK_OPTIMIZATION = "-O2"
 RUNTIME_OPTIMIZATION = "-O3"
 import platform as _platform
 if WINDOWS or (sys.platform == "linux" and _platform.machine() == "x86_64"):
