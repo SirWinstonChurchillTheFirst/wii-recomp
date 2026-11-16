@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -56,6 +57,24 @@ def check_hash(data, expected):
         fail(f"nodtool download failed its checksum (got {actual})")
 
 
+def download(url):
+    """The file at url. Python's own TLS can't fetch an intermediate certificate the server
+    leaves out, which Windows does by itself, so on Windows a failed download is tried
+    again with the curl that comes with it. The checksum is checked either way."""
+    try:
+        with urllib.request.urlopen(url) as response:
+            return response.read()
+    except urllib.error.URLError as error:
+        curl = shutil.which("curl")
+        if not curl:
+            raise
+        print(f"Python couldn't download it ({error.reason}); trying curl")
+        result = subprocess.run([curl, "-fsSL", url], capture_output=True)
+        if result.returncode:
+            fail(f"the download failed: {result.stderr.decode(errors='replace').strip()}")
+        return result.stdout
+
+
 def find_nodtool():
     """Uses an installed nodtool, or downloads the pinned version once."""
     installed = shutil.which("nodtool")
@@ -67,8 +86,7 @@ def find_nodtool():
     asset, expected = nodtool_build(platform.system(), platform.machine())
     url = NODTOOL_URL.format(version=NODTOOL_VERSION, asset=asset)
     print(f"Downloading {asset} {NODTOOL_VERSION}")
-    with urllib.request.urlopen(url) as response:
-        data = response.read()
+    data = download(url)
     check_hash(data, expected)
     TOOL_FOLDER.mkdir(exist_ok=True)
     tool.write_bytes(data)
