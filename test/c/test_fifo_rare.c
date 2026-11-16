@@ -29,6 +29,8 @@ void gx_bounding_box_write(int r, uint32_t d) {}
 int gx_bounding_box_read(uint32_t a, uint32_t *v) { return 0; }
 void gx_bounding_box_off(void) {}
 const GxBackend *gx_backend;
+int gx_shows_held;
+double vi_field_rate(void) { return 60; }
 void gx_clear(void) {}
 static int vertices_read;
 // Every vertex of format 0 is the largest a vertex can be.

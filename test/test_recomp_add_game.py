@@ -86,7 +86,7 @@ class Tiers(Folder):
         self.assertEqual(len(outputs[0]), 6)  # Three groups, each with both tiers.
         self.assertEqual(outputs[0], outputs[1])
 
-    def test_only_the_quick_tier_is_built_quickly(self):
+    def test_both_tiers_are_built_for_speed(self):
         build = HERE.parent / "recomp" / f"build-test-{os.getpid()}"
         self.addCleanup(shutil.rmtree, build, ignore_errors=True)
         (build / "generated").mkdir(parents=True)
@@ -97,7 +97,7 @@ class Tiers(Folder):
         rules = (build / "build.ninja").read_text()
         flags = {line.split(": cc generated/")[1]: following.split()[2]
                  for line, following in zip(rules.splitlines(), rules.splitlines()[1:]) if ": cc generated/" in line}
-        self.assertEqual(flags, {"cold0000.c": "-O0", "part0000.c": "-O2", "table.c": "-O2"})
+        self.assertEqual(flags, {"cold0000.c": "-O2", "part0000.c": "-O2", "table.c": "-O2"})
 
 
 @unittest.skipUnless(shutil.which("clang"), "needs clang")
