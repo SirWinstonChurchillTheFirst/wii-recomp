@@ -12,7 +12,7 @@
 
 enum {
   INQUIRY = 0x12, READ_DISC_ID = 0x70, READ = 0x71, GET_COVER_REGISTER = 0x7a, CLEAR_COVER_INTERRUPT = 0x86, GET_COVER_STATUS = 0x88, RESET = 0x8a, OPEN_PARTITION = 0x8b, CLOSE_PARTITION = 0x8c, UNENCRYPTED_READ = 0x8d,
-  GET_STATUS_REGISTER = 0x95, READ_BCA = 0xda, BCA_BYTES = 0x40, BCA_MARK_AT = 0x33, REQUEST_ERROR = 0xe0, STOP_MOTOR = 0xe3, EJECT_AT = 7, EJECT = 1,
+  GET_STATUS_REGISTER = 0x95, READ_BCA = 0xda, BCA_BYTES = 0x40, BCA_MARK_AT = 0x33, SEEK = 0xab, REQUEST_ERROR = 0xe0, STOP_MOTOR = 0xe3, EJECT_AT = 7, EJECT = 1,
   COVER_OPEN = 1, NO_MEDIUM = 0x01023a00,  // The drive's error for "no disc".
   DRIVE_OK = 1, DRIVE_ERROR = 2, SECURITY_ERROR = 32,
   COVER_STATUS_EMPTY = 1, COVER_STATUS_DISC = 2,  // GetCoverStatus: no disc, or a disc in (Dolphin's DI.cpp).
@@ -109,6 +109,9 @@ int dvd_request(uint32_t command, uint32_t request) {
       if (input != 0x80000000u && rd8(input + EJECT_AT) & EJECT) console_eject();
       return DRIVE_OK;
     case RESET: return DRIVE_OK;
+    // Moving the laser ahead of reads, as Mario & Sonic at the Olympic Games does at start.
+    // An image reads as fast anywhere, so it only needs a disc in, as Dolphin's DVDLowSeek.
+    case SEEK: return drive_has_disc() ? DRIVE_OK : DRIVE_ERROR;
     case GET_STATUS_REGISTER: if (word_out) wr32(word_out, 0); return DRIVE_OK;
     case REQUEST_ERROR: if (word_out) wr32(word_out, drive_has_disc() ? 0 : NO_MEDIUM); return DRIVE_OK;
     case GET_COVER_REGISTER: if (word_out) wr32(word_out, drive_has_disc() ? 0 : COVER_OPEN); return DRIVE_OK;
