@@ -302,6 +302,12 @@ static void add_position(ShaderText *text) {
     ";\n  vec4 object = vec4(a_position, 1.0);\n"
     "  vec4 view = vec4(dot(matrix_rows[matrix], object), dot(matrix_rows[matrix + 1], object), dot(matrix_rows[matrix + 2], object), 1.0);\n"
     "  vec4 clip = vec4(dot(projection[0], view), dot(projection[1], view), dot(projection[2], view), dot(projection[3], view));\n"
+    // The far and near planes themselves are inside. A menu drawn flat on the far plane
+    // (Mario & Sonic at the Olympic Winter Games, at z -1 with far at 1) comes out a
+    // rounding step past it, and was clipped away whole: a black screen. Dolphin's vertex
+    // shader shrinks its clipping depth by a ten-millionth for the same reason.
+    "  if (clip.z < -clip.w && clip.z > -clip.w * 1.000001) clip.z = -clip.w;\n"
+    "  if (clip.z > 0.0 && clip.z < clip.w * 0.000001) clip.z = 0.0;\n"
     "  gl_Position = vec4(clip.xy, GX_DEPTH(clip.z, clip.w), clip.w);\n");
 }
 
