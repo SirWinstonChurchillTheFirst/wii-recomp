@@ -60,6 +60,7 @@ unsigned gx_frame_number(void) { return frames; }
 typedef struct {
   int used;
   uint32_t address, image, palette;
+  uint64_t colors;  // A paletted image's colors (gx_palette_identity): each set is a texture of its own.
   TextureMemo memo;
   unsigned checked_frame;
   GxTexture *texture;
@@ -83,23 +84,26 @@ static void start(void) {
 }
 
 // Finds a texture's slot by what identifies it, and starts using a free one if new.
-static uint32_t cache_slot(uint32_t address, uint32_t image, uint32_t palette) {
-  uint32_t mixed = (address ^ (image * 31u) ^ (palette * 131u)) * 2654435761u;
+static uint32_t cache_slot(uint32_t address, uint32_t image, uint32_t palette, uint64_t colors) {
+  uint32_t mixed = (address ^ (image * 31u) ^ (palette * 131u) ^ (uint32_t)colors ^ (uint32_t)(colors >> 32)) * 2654435761u;
   uint32_t first = mixed >> CACHE_SLOT_SHIFT;
   for (uint32_t step = 0; step < CACHE_PROBES; step++) {
     uint32_t slot = (first + step) % CACHE_SLOTS;
     CacheEntry *entry = &cache[slot];
-    if (!entry->used || (entry->address == address && entry->image == image && entry->palette == palette)) {
+    if (!entry->used || (entry->address == address && entry->image == image && entry->palette == palette && entry->colors == colors)) {
       entry->used = 1;
       entry->address = address;
       entry->image = image;
       entry->palette = palette;
+      entry->colors = colors;
       return slot;
     }
   }
   cache[first].address = address;
   cache[first].image = image;
   cache[first].palette = palette;
+  cache[first].colors = colors;
+  cache[first].checked_frame = 0;  // Another texture's slot now: what it holds isn't this one.
   return first;
 }
 
@@ -143,7 +147,7 @@ static void bind_texture(int map) {
     use_texture(map, copied, 0);
     return;
   }
-  CacheEntry *entry = &cache[cache_slot(address, image, palette)];
+  CacheEntry *entry = &cache[cache_slot(address, image, palette, gx_palette_identity(image, palette))];
   if (!entry->texture) entry->texture = gx_backend->texture_create();
   use_texture(map, entry->texture, 1);
   // Checking for changed pictures once a frame is plenty.

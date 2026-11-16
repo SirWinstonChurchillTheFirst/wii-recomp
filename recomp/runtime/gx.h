@@ -106,6 +106,7 @@ void gx_xf_note(uint32_t address, uint32_t count);
 // Decodes the texture a map points at, or returns 0 if it has none, or if it is what the
 // memo says it was.
 DecodedTexture gx_decode_texture(int map, TextureMemo *memo);
+uint64_t gx_palette_identity(uint32_t image, uint32_t palette);  // Which colors a paletted image has now; 0 for others.
 void gx_load_palette(void);
 void gx_restore_palettes(const uint8_t *texture_memory);
 void gx_save_palettes(uint8_t *texture_memory);
