@@ -1648,8 +1648,11 @@ static void hand_picture_over(Frame *frame) {
 // screen faster than the game's 60 Hz shows as judder. So a picture finished less than a
 // field after the last one was shown is held until that field is over: the commands
 // thread shows it (show_held) while it goes on with the next frame's work. A picture that
-// comes later is shown at once, as is one whose window changed, and the next picture
-// shows a held one first. WII_RECOMP_SHOW_AT_ONCE=1 shows each as it's finished, as before.
+// comes later is shown at once, as is one whose window changed. A picture finished while
+// one is still held isn't shown, as the screen wouldn't have shown both either (Mario &
+// Sonic at the Olympic Winter Games draws some menus as fast as it can, hundreds a second),
+// unless the held one is about due, which is then shown first.
+// WII_RECOMP_SHOW_AT_ONCE=1 shows each as it's finished, as before.
 static struct { int waiting; uint32_t image; uint64_t due; } held_show;
 static uint64_t last_shown;
 static int shown_outdated;
@@ -1688,7 +1691,12 @@ static void show_or_hold(uint32_t image, int at_once) {
 }
 
 static void present(const GxRectangle *from) {
-  show_now(0);  // A picture still held gives way to this one.
+  enum { ABOUT_DUE_NANOSECONDS = 2000000 };
+  int unshown = 0;
+  if (held_show.waiting) {
+    if (held_show.due > host_nanoseconds() + ABOUT_DUE_NANOSECONDS) unshown = 1;
+    else show_now(held_show.due);
+  }
   flush_run();  // Strips gathered so far go first.
   record_reads();
   give_up_layer();
@@ -1716,7 +1724,7 @@ static void present(const GxRectangle *from) {
     mark("to window", 0, 0);
     goto shown;
   }
-  VkResult acquired = vk.swapchain ? vkAcquireNextImageKHR(vk.device, vk.swapchain, ACQUIRE_TIMEOUT_NS, frame->image_ready, VK_NULL_HANDLE, &image_index) : VK_NOT_READY;
+  VkResult acquired = vk.swapchain && !unshown ? vkAcquireNextImageKHR(vk.device, vk.swapchain, ACQUIRE_TIMEOUT_NS, frame->image_ready, VK_NULL_HANDLE, &image_index) : VK_NOT_READY;
   int showing = acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR;
   outdated = acquired == VK_SUBOPTIMAL_KHR || acquired == VK_ERROR_OUT_OF_DATE_KHR;
   if (showing) {
@@ -1735,7 +1743,8 @@ shown:
   if (vk_picture_sink) hand_picture_over(frame);
   if (vk.swapchain) {
     window_refresh_size();
-    if (outdated || !vk_swapchain_matches_window()) vk_create_swapchain();
+    // Not under a held picture: the next one sees to it.
+    if (!held_show.waiting && (outdated || !vk_swapchain_matches_window())) vk_create_swapchain();
   }
   begin_frame(&vk.frames[(frame - vk.frames + 1) % FRAMES_IN_FLIGHT]);
 }
