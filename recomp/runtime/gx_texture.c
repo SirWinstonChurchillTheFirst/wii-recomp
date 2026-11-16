@@ -235,3 +235,11 @@ DecodedTexture gx_decode_texture(int map, TextureMemo *memo) {
   texture.rgba = pixels;
   return texture;
 }
+
+// For gx_inspect: the first entries of the palette at a slot, big-endian 16-bit words.
+void gx_palette_peek(uint32_t slot, uint16_t *out, int count) {
+  for (int i = 0; i < count; i++) {
+    const uint8_t *p = palette_memory + (((slot & 0x3ff) << PALETTE_SLOT_SHIFT) + (uint32_t)i * 2) % PALETTE_BYTES;
+    out[i] = (uint16_t)(p[0] << 8 | p[1]);
+  }
+}

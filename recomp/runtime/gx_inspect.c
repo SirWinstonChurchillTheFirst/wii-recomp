@@ -48,8 +48,14 @@ static void dump_draw(const TevKey *tev, unsigned maps, int format, int primitiv
     if (!(maps & (1u << map))) continue;
     uint32_t image = gx.bp[map < 4 ? BP_TEXTURE_IMAGE + map : BP_TEXTURE_IMAGE_HIGH + map - 4];
     uint32_t address = gx.bp[map < 4 ? BP_TEXTURE_ADDRESS + map : BP_TEXTURE_ADDRESS_HIGH + map - 4] & 0xffffff;
-    fprintf(dump_file, "  map %d format %u size %ux%u address %08x%s\n", map, (image >> 20) & 15, (image & 0x3ff) + 1, ((image >> 10) & 0x3ff) + 1,
-            address << 5, gx_copy_find(map) ? " FROM COPY" : "");
+    fprintf(dump_file, "  map %d format %u size %ux%u address %08x palette %06x%s\n", map, (image >> 20) & 15, (image & 0x3ff) + 1, ((image >> 10) & 0x3ff) + 1,
+            address << 5, gx.bp[map < 4 ? 0x98 + map : 0xb8 + map - 4] & 0xffffff, gx_copy_find(map) ? " FROM COPY" : "");
+    {
+      void gx_palette_peek(uint32_t slot, uint16_t *out, int count);
+      uint16_t words[8];
+      gx_palette_peek(gx.bp[map < 4 ? 0x98 + map : 0xb8 + map - 4], words, 8);
+      fprintf(dump_file, "    palette words %04x %04x %04x %04x %04x %04x %04x %04x\n", words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
+    }
   }
   for (int stage = 0; stage < tev->stages; stage++) {
     const TevStage *s = &tev->stage[stage];
