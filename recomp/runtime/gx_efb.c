@@ -38,6 +38,7 @@ typedef struct { int depth, x, y, width; uint32_t value; } Access;  // width: pi
 
 static void peek_work(void *argument) {
   Access *access = argument;
+  gx_settings_written++;  // The backend may leave its draw state to read: the next draw sets it all again.
   int kind = access->depth;
   GxRectangle *area = &held[kind].area;
   int inside = held[kind].seen == changes && access->x >= area->x && access->y >= area->y && access->x < area->x + area->width
@@ -78,6 +79,7 @@ static void peek_work(void *argument) {
 // channels alone, which Dolphin doesn't follow either, so those are named.
 static void poke_work(void *argument) {
   Access *access = argument;
+  gx_settings_written++;  // As for a peek.
   if (access->depth) {
     uint32_t z = hw_peek(PE_Z_CONFIG, 2);
     if (((z >> Z_COMPARE_BIT) & 1 && ((z >> Z_FUNCTION_SHIFT) & 7) != Z_ALWAYS) || !((z >> Z_UPDATE_BIT) & 1)) gap_hit("gx.pe_z_alpha_destination_alpha_config", z);
