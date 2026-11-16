@@ -320,7 +320,12 @@ void wii_remote_simulated_update(int device, uint64_t now) {
       motionplus_fill(device, &player, attached(device), report + mode->attachment_at, mode->attachment_bytes);
     } else attachment_fill(device, &player, report + mode->attachment_at, mode->attachment_bytes);
   }
-  if (!remotes[device].continuous && !memcmp(report, remotes[device].last_report, mode->bytes)) return;
+  // A real remote's sensors are never quite still, so a mode with motion or the camera
+  // sends at the full rate even out of continuous mode. Libraries smooth the pointer a step
+  // for each report: Mario Party 8's cursor, sent one report when it moved, took ten
+  // seconds to reach where it pointed.
+  int sensors = mode->motion || (mode->camera_bytes && remotes[device].camera_on);
+  if (!remotes[device].continuous && !sensors && !memcmp(report, remotes[device].last_report, mode->bytes)) return;
   if (getenv("WII_RECOMP_BLUETOOTH_LOG") && (report[1] != remotes[device].last_report[1] || report[2] != remotes[device].last_report[2])) {
     fprintf(stderr, "bluetooth: device %d sends buttons %02x%02x at %llu\n", device, report[2], report[1], (unsigned long long)now);
   }
