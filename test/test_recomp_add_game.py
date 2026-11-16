@@ -41,11 +41,9 @@ class Folder(unittest.TestCase):
 
 
 class Tiers(Folder):
-    def test_fast_tier_covers_the_share_of_runs_most_run_first(self):
-        counts = {0x10: 900, 0x20: 90, 0x30: 9, 0x40: 1}
-        self.assertEqual(emit.choose_fast(counts, share=0.9), {0x10})
-        self.assertEqual(emit.choose_fast(counts, share=0.99), {0x10, 0x20})
-        self.assertEqual(emit.choose_fast(counts, share=1.0), {0x10, 0x20, 0x30, 0x40})
+    def test_fast_tier_is_every_function_that_ran(self):
+        counts = {0x10: 900, 0x20: 90, 0x30: 9, 0x40: 1, 0x50: 0}
+        self.assertEqual(emit.choose_fast(counts), {0x10, 0x20, 0x30, 0x40})
         self.assertEqual(emit.choose_fast({}), set())
 
     def test_profile_skips_its_header_and_adds_repeats(self):

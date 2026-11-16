@@ -32,8 +32,6 @@ from functions import add_starts, add_unreached_code, branch_target, find_functi
 from signatures import load_entries, resolve
 
 FUNCTIONS_PER_FILE = 150
-# The share of all counted runs that the speed tier covers, most-run functions first.
-HOT_SHARE = 0.999
 GROUP_FILE = re.compile(r"(part|cold)\d{4}\.c")
 # Filled in for each game from signatures.py. REPLACED holds the system functions we
 # replace rather than translate, as address -> (reason, C body). IDLE_LOOPS holds loops
@@ -1091,16 +1089,12 @@ def read_counts(path):
     return counts, module_counts
 
 
-def choose_fast(counts, share=HOT_SHARE):
-    """The fewest functions, most-run first, that together hold `share` of all counted runs."""
-    total = sum(counts.values())
-    chosen, covered = set(), 0
-    for address, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
-        if covered >= share * total:
-            break
-        chosen.add(address)
-        covered += count
-    return chosen
+def choose_fast(counts):
+    """Every function that ran in a profiled session. Most of the runs are in a few hundred
+    functions, but code that runs once, as a race or a level starts, matters too: left in
+    the quick tier it made a 160 ms hitch at the start of Mario Kart Wii's first race.
+    Code that never ran stays quick to compile."""
+    return {address for address, count in counts.items() if count > 0}
 
 
 def virtual_bluetooth_keeps(entry):
