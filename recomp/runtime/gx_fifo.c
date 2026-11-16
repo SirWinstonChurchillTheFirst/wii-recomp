@@ -156,9 +156,12 @@ static void setting_gaps(uint32_t reg, uint32_t data) {
 // the screen. This one is through a frame in microseconds, and a game paced by the chip
 // rather than the screen runs away: Mario & Sonic at the Olympic Winter Games, once its
 // "drawing done" flag is a frame out of step, is woken from its wait for the screen by each
-// frame's end and made 600 to 900 frames a second, its menus black. So a picture copied
-// to another framebuffer than the last, in the same field as that one, waits on the
-// commands thread until the screen's next field. The wait also ends a field after the
+// frame's end and made 600 to 900 frames a second. So a picture copied to a new
+// framebuffer in the same field as the last, and less than a third of a field after it,
+// waits on the commands thread until the screen's next field. Two further apart are let
+// through: a frame that takes about a field (Mario Sports Mix on a small machine) ends
+// now just before a field begins and now just after, and holding the second of those
+// made every tenth picture late. The wait also ends a field after the
 // last one began by the host's clock: the game's thread, which counts the fields, may be
 // waiting for this thread. WII_RECOMP_FRAMES_UNHELD=1 turns it off.
 static _Atomic unsigned fields_begun;
@@ -176,12 +179,14 @@ static uint64_t host_now(void) {
 static void hold_for_field(uint32_t address) {
   static unsigned last_field = ~0u;
   static uint32_t last_address;
+  static uint64_t last_time;
   static int off = -1;
   if (off < 0) off = getenv("WII_RECOMP_FRAMES_UNHELD") != 0;
   unsigned field = atomic_load(&fields_begun);
-  if (!off && on_commands_thread && field == last_field && address != last_address) {
-    double rate = vi_field_rate();
-    uint64_t give_up = atomic_load(&field_began) + (uint64_t)(1e9 / (rate > 1 ? rate : 60.0)) + 2000000u;
+  double rate = vi_field_rate();
+  uint64_t field_time = (uint64_t)(1e9 / (rate > 1 ? rate : 60.0)), now = host_now();
+  if (!off && on_commands_thread && field == last_field && address != last_address && now - last_time < field_time / 3) {
+    uint64_t give_up = atomic_load(&field_began) + field_time + 2000000u;
     TIMELINE_BEGIN("held for the field");
     while (atomic_load(&fields_begun) == field && host_now() < give_up) {
       run_handed(1);
@@ -189,7 +194,9 @@ static void hold_for_field(uint32_t address) {
     }
     TIMELINE_END("held for the field");
     field = atomic_load(&fields_begun);
+    now = host_now();
   }
+  if (address != last_address) last_time = now;
   last_field = field;
   last_address = address;
 }
