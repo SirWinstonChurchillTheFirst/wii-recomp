@@ -63,6 +63,8 @@ typedef struct {
   uint32_t guest;
   uint32_t resume_pc, resume_stack;
   volatile int resumed;
+  void *stack;    // The host stack its code started on, freed when the slot starts again or goes to another context.
+  uint64_t used;  // When it was last saved or loaded, by the count of both.
   ucontext_t host;
 #ifdef RECORDS_CALLER
   CallerRegisters caller;
@@ -90,16 +92,52 @@ static void print_history(void) {
   }
 }
 
+static Slot *running;  // Whose host stack the processor is on; 0 on the one the program started with.
+static uint64_t uses;
+
+static void free_stack(Slot *slot);
+
+// Whether a context is a thread the game's system still lists. Its list of live threads
+// starts at a fixed place in low memory, and a thread leaves it when it ends.
+static int thread_is_listed(uint32_t guest) {
+  enum { ACTIVE_THREADS = 0x800000dc, THREAD_NEXT_ACTIVE = 0x2fc, MOST = 1024 };
+  uint32_t thread = rd32(ACTIVE_THREADS);
+  for (int n = 0; n < MOST && thread >= 0x80000000u && thread < 0x94000000u; n++) {
+    if (thread == guest) return 1;
+    thread = rd32(thread + THREAD_NEXT_ACTIVE);
+  }
+  return 0;
+}
+
+// A game that keeps making threads (Mario Sports Mix does as it plays) would fill the
+// table with ones long ended. When it's full, the context unused longest that isn't a
+// listed thread gives up its slot and its host stack.
 static Slot *slot_for(uint32_t guest) {
+  Slot *oldest = 0;
   for (int i = 0; i < MAX_CONTEXTS; i++) {
-    if (slots[i].guest == guest) return &slots[i];
+    if (slots[i].guest == guest) {
+      slots[i].used = ++uses;
+      return &slots[i];
+    }
     if (!slots[i].guest) {
       slots[i].guest = guest;
+      slots[i].used = ++uses;
       return &slots[i];
     }
   }
-  fprintf(stderr, "stop: too many thread contexts\n");
-  exit(5);
+  for (int i = 0; i < MAX_CONTEXTS; i++) {
+    if (&slots[i] == running || (oldest && slots[i].used >= oldest->used) || thread_is_listed(slots[i].guest)) continue;
+    oldest = &slots[i];
+  }
+  if (!oldest) {
+    fprintf(stderr, "stop: too many thread contexts\n");
+    exit(5);
+  }
+  static int told;
+  if (told++ < 3) fprintf(stderr, "threads: context %08x isn't in use any more, its slot goes to %08x\n", oldest->guest, guest);
+  free_stack(oldest);
+  *oldest = (Slot){.guest = guest, .used = ++uses};
+  return oldest;
 }
 
 #ifdef RECORDS_CALLER
@@ -265,7 +303,13 @@ __attribute__((naked, noreturn)) static void start_on_stack(void *top, void *lim
       "jmp thread_start\n");
 }
 
+static void free_stack(Slot *slot) {
+  if (slot->stack && slot != running) VirtualFree(slot->stack, 0, MEM_RELEASE);
+  slot->stack = 0;
+}
+
 static void start_fresh(Slot *slot, uint32_t pc) {
+  free_stack(slot);  // From an earlier thread with its context here.
   uint8_t *stack = VirtualAlloc(0, HOST_STACK_BYTES, MEM_RESERVE, PAGE_READWRITE);
   uint8_t *top = stack + HOST_STACK_BYTES;
   if (!stack || !VirtualAlloc(top - FIRST_COMMIT, FIRST_COMMIT, MEM_COMMIT, PAGE_READWRITE)
@@ -275,18 +319,27 @@ static void start_fresh(Slot *slot, uint32_t pc) {
   }
   start_pc = pc;
   slot->resume_pc = 0;
+  slot->stack = stack;
+  running = slot;
   start_on_stack(top, top - FIRST_COMMIT, stack);
 }
 #else
+static void free_stack(Slot *slot) {
+  if (slot->stack && slot != running) free(slot->stack);
+  slot->stack = 0;
+}
+
 static void start_fresh(Slot *slot, uint32_t pc) {
   static ucontext_t fresh;
+  free_stack(slot);  // From an earlier thread with its context here.
   getcontext(&fresh);
-  fresh.uc_stack.ss_sp = malloc(HOST_STACK_BYTES);
+  fresh.uc_stack.ss_sp = slot->stack = malloc(HOST_STACK_BYTES);
   fresh.uc_stack.ss_size = HOST_STACK_BYTES;
   fresh.uc_link = 0;
   start_pc = pc;
   makecontext(&fresh, thread_start, 0);
   slot->resume_pc = 0;
+  running = slot;
   setcontext(&fresh);
 }
 #endif
@@ -305,6 +358,7 @@ void load_context(void) {
   Slot *slot = slot_for(c);
   if (slot->resume_pc == pc && slot->resume_stack == cpu.r[1]) {
     slot->resumed = 1;
+    running = slot;
 #ifdef RECORDS_CALLER
     if (slot->use_caller) return_to_caller(&slot->caller);
 #endif
