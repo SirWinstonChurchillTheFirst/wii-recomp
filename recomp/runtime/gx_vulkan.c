@@ -1,12 +1,14 @@
 // The Vulkan backend. Its images count rows from the top as the game does, so the
 // picture is stored the right way up and copies aren't turned over. Shaders still
 // see OpenGL's clip space, as the viewport's height is negative.
+#define _GNU_SOURCE  // For the clock a held picture is timed by.
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gx_vulkan.h"
 #include "debug.h"
