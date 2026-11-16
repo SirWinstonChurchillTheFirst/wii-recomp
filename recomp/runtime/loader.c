@@ -95,7 +95,11 @@ uint32_t load_program(const Boot *boot) {
 
 // What the Wii's firmware leaves in low memory before a game starts.
 #define MEM1_END 0x81800000u
-#define FILE_TABLE_BLOCK 0x10000u  // The table takes whole blocks at the top of main memory, with one spare below.
+// The top of the arena as the system menu leaves it, which the apploader puts the disc's
+// file table just below, 32-byte aligned, and lowers the arena to (Dolphin's SetupWiiMemory).
+// The table used to take whole 64 KB blocks with one spare below, which cost Super Smash
+// Bros. Brawl 89 KB: its first fight then couldn't make a 0.6 MB heap and stopped.
+#define ARENA_HIGH_BEFORE_TABLE 0x817fec60u
 #define BUS_HZ 243000000u
 #define CPU_HZ 729000000u
 
@@ -122,8 +126,8 @@ static uint32_t ios_mem2_end(uint32_t ios) {
 void set_up_low_memory(const Boot *boot) {
   memcpy(host(0x80000000u), boot->header, 0x20);
   uint32_t table_size = (uint32_t)boot->table_bytes;
-  uint32_t table_address = MEM1_END - ((table_size + FILE_TABLE_BLOCK - 1) & ~(FILE_TABLE_BLOCK - 1));
-  uint32_t arena_high = table_address - FILE_TABLE_BLOCK;
+  uint32_t table_address = (ARENA_HIGH_BEFORE_TABLE - table_size) & ~31u;
+  uint32_t arena_high = table_address;
   memcpy(host(table_address), boot->table, table_size);
   wr32(0x80000018, 0x5d1c9ea3);   // Wii disc.
   wr32(0x80000020, 0x0d15ea5e);   // Normal boot.

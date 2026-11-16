@@ -7,6 +7,7 @@ void stage_add(int stage, uint64_t ticks);
 void stage_frame(float gap_ms);
 
 void debug_threads(void);
+extern volatile int debug_threads_now;  // Set by the control pipe's "threads": listed once, soon.
 void debug_poll(uint64_t seconds_running);
 
 // Says once, by name and value, that the graphics code met something it doesn't do, and

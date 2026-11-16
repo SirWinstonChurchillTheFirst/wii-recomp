@@ -16,6 +16,7 @@
 
 #include "console.h"
 #include "cpu.h"
+#include "debug.h"
 #include "dsp_record.h"
 #include "gx_inspect.h"
 #include "gx_shot.h"
@@ -42,6 +43,7 @@ static void run_command(const char *line) {
   if (!strncmp(line, "reset", 5)) reset_button_press();
   else if (!strncmp(line, "power", 5)) { if (!power_button_press()) fprintf(stderr, "control: nothing is listening for the power button\n"); }
   else if (!strncmp(line, "dump", 4)) gx_inspect_dump();
+  else if (!strncmp(line, "threads", 7)) debug_threads_now = 1;  // Listed on the game's thread, at its next check.
   else if (sscanf(line, "record-sound %d %1023s", &first, path) == 2) dsp_record_request(first, path);
   else if (sscanf(line, "record %d %1023s", &first, path) == 2) gx_record_request(first, path);
   else if (sscanf(line, "timeline %d %1023s", &first, path) == 2 && first > 0) timeline_request((unsigned)first, path);

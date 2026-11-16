@@ -97,8 +97,14 @@ void stage_frame(float gap_ms) {
   longest_idle = 0;
 }
 
+volatile int debug_threads_now;
+
 void debug_poll(uint64_t seconds_running) {
   static int done;
+  if (debug_threads_now) {
+    debug_threads_now = 0;
+    debug_threads();
+  }
   guest_memory_report();
   gap_flush();
   report_activity(seconds_running);
