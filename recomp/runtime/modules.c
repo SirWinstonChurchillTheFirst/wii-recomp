@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "modules.h"
+#include "dispatch.h"
 #include "title.h"
 
 static int is_guest(uint32_t address) { return address >= 0x80000000u && address < 0x81800000u; }
@@ -41,6 +42,30 @@ static uint32_t branch_target(uint32_t at) {
   return word & 2 ? offset : at + offset;
 }
 
+// Where each bound module's header is, by its number in the title, 0 if it isn't bound.
+static uint32_t headers[65536];
+
+static int module_number(const Module *module) {
+  for (int m = 0; m < title->module_count; m++) if (title->modules[m] == module) return m;
+  return 0;
+}
+
+// A module's header keeps its number (a REL's) or its section table's place (an RSO's)
+// while it's linked; another module loaded over it changes that. Then its functions are
+// let go, and the next call there finds whichever module is there now.
+int modules_still_bound(int number) {
+  const Module *module = title->modules[number];
+  uint32_t header = headers[number];
+  if (header && (module->id ? rd32(header) == module->id : rd32(header + module->table_field) == header + module->table_offset)) return 1;
+  if (header) {
+    uint32_t code = *module->code;
+    for (int i = 0; i < module->function_count; i++) dispatch_forget_module(code + module->functions[i].offset, number);
+    headers[number] = 0;
+    fprintf(stderr, "module %s: no longer at %08x, let go\n", module->name, header);
+  }
+  return 0;
+}
+
 static void bind(const Module *module, uint32_t code, uint32_t header) {
   *module->code = code;
   uint32_t table = rd32(header + module->table_field);
@@ -67,7 +92,9 @@ static void bind(const Module *module, uint32_t code, uint32_t header) {
       exit(4);
     }
   }
-  for (int i = 0; i < module->function_count; i++) dispatch_register(code + module->functions[i].offset, module->functions[i].run);
+  int number = module_number(module);
+  headers[number] = header;
+  for (int i = 0; i < module->function_count; i++) dispatch_register_module(code + module->functions[i].offset, module->functions[i].run, number);
   fprintf(stderr, "module %s: linked at %08x, %d native functions ready\n", module->name, header, module->function_count);
 }
 

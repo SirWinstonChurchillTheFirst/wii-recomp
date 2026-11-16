@@ -21,6 +21,10 @@ void unimplemented(uint32_t address, const char *name) {
 #define CODE_START 0x80000000u
 #define CODE_WORDS 0x600000u
 static void (*code_slots[CODE_WORDS])(void);
+// For a slot a module's function filled: the module's number plus one. Games load one
+// module over another at the same address (Mario Party 9's minigame and its instructions
+// screen), and a slot left from the module that was there before would run its code.
+static uint16_t slot_module[CODE_WORDS];
 
 void fill_code_slots(void) {
   for (int i = 0; i < title->function_count; i++) {
@@ -42,7 +46,7 @@ static GuestFunction search_table(uint32_t address) {
 
 GuestFunction translated_at(uint32_t address) {
   uint32_t word = (address - CODE_START) >> 2;
-  if (word < CODE_WORDS && code_slots[word]) return code_slots[word];
+  if (word < CODE_WORDS && code_slots[word] && (!slot_module[word] || modules_still_bound(slot_module[word] - 1))) return code_slots[word];
   return search_table(address);
 }
 
@@ -85,6 +89,17 @@ void dispatch_register(uint32_t address, GuestFunction run) {
     exit(4);
   }
   code_slots[word] = run;
+  slot_module[word] = 0;
+}
+
+void dispatch_register_module(uint32_t address, GuestFunction run, int module) {
+  dispatch_register(address, run);
+  slot_module[(address - CODE_START) >> 2] = (uint16_t)(module + 1);
+}
+
+void dispatch_forget_module(uint32_t address, int module) {
+  uint32_t word = (address - CODE_START) >> 2;
+  if (word < CODE_WORDS && slot_module[word] == module + 1) code_slots[word] = 0, slot_module[word] = 0;
 }
 
 static __attribute__((noinline)) void run_untranslated(uint32_t address) {
@@ -108,8 +123,10 @@ static __attribute__((noinline)) void run_untranslated(uint32_t address) {
 void dispatch(uint32_t address) {
   uint32_t word = (address - CODE_START) >> 2;
   if (word < CODE_WORDS && code_slots[word]) {
-    code_slots[word]();
-    return;
+    if (!slot_module[word] || modules_still_bound(slot_module[word] - 1)) {
+      code_slots[word]();
+      return;
+    }
   }
   GuestFunction run = search_table(address);
   if (run) {
