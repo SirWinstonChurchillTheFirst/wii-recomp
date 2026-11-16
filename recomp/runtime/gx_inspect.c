@@ -3,6 +3,7 @@
 // range of draws, so a fault on screen can be narrowed to one draw while the game runs.
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "gx_backend.h"
 #include "gx_inspect.h"
@@ -44,6 +45,15 @@ static void dump_draw(const TevKey *tev, unsigned maps, int format, int primitiv
           skipped ? " SKIPPED" : "", primitive, count, format, gx.cp[CP_DESCRIPTOR_LOW], gx.cp[CP_DESCRIPTOR_HIGH], gx.cp[CP_FORMAT_A + format],
           tev->stages, gx.bp[BP_GEN_MODE] & 15, gx.xf[XF_COLOR_CONTROL]);
   fprintf(dump_file, "  z %06x blend %06x alpha test %06x cull %u\n", gx.bp[BP_Z_MODE], gx.bp[BP_BLEND], gx.bp[BP_ALPHA_TEST], (gx.bp[BP_GEN_MODE] >> 14) & 3);
+  // Where it lands: the viewport's scale and offset, the projection (its kind last), the
+  // scissor, and the constant alpha and colour registers a fade is often done with.
+  float view[6], projection[6];
+  for (int i = 0; i < 6; i++) memcpy(&view[i], &gx.xf[0x101a + i], 4), memcpy(&projection[i], &gx.xf[0x1020 + i], 4);
+  fprintf(dump_file, "  viewport %.1f %.1f %.1f %.1f %.1f %.1f projection %.4f %.4f %.4f %.4f %.4f %.4f kind %u scissor %06x %06x offset %06x\n", view[0], view[1],
+          view[2], view[3], view[4], view[5], projection[0], projection[1], projection[2], projection[3], projection[4], projection[5], gx.xf[0x1026],
+          gx.bp[0x20], gx.bp[0x21], gx.bp[0x59]);
+  fprintf(dump_file, "  constant alpha %06x, registers %06x %06x %06x %06x, material %08x ambient %08x, konst selects %06x %06x\n", gx.bp[0x42], gx.bp[0xe0], gx.bp[0xe1],
+          gx.bp[0xe2], gx.bp[0xe3], gx.xf[0x100c], gx.xf[0x100a], gx.bp[0xf6], gx.bp[0x18]);
   for (int map = 0; map < MAX_TEXTURE_MAPS; map++) {
     if (!(maps & (1u << map))) continue;
     uint32_t image = gx.bp[map < 4 ? BP_TEXTURE_IMAGE + map : BP_TEXTURE_IMAGE_HIGH + map - 4];

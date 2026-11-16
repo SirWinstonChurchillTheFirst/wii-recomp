@@ -521,6 +521,9 @@ def function_name(address):
 # Set while a run-time-loaded module is translated: where its code and imports stand in,
 # and the C names of the addresses its linker settles on. See modules.py.
 MODULE = None
+# Program addresses of functions whose calls are to be logged, for finding who calls what
+# when: WII_RECOMP_EMIT_TRACE=80573fd0,80574268 while building.
+TRACED = {int(text, 16) for text in os.environ.get("WII_RECOMP_EMIT_TRACE", "").split(",") if text}
 FIELD_STAND_IN = 0x7b5d  # Put in place of a linker-filled immediate, then replaced by C.
 
 
@@ -574,6 +577,8 @@ def emit_function(program, start, body, starts):
         reason, body_text = REPLACED[start]
         return f"void {function_name(start)}(void) {{ /* {reason} */ {body_text} }}", set(), Counter()
     lines, labels = [f"void {function_name(start)}(void) {{ POLL();"], set()
+    if start in TRACED:  # WII_RECOMP_EMIT_TRACE: each call of these is logged as the game runs (debug.c).
+        lines.append(f"{{ extern void debug_trace_call(unsigned); debug_trace_call(0x{start:x}u); }}")
     ordered = sorted(body)
     for address in ordered:
         word = program.word(address)

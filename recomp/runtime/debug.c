@@ -12,7 +12,7 @@
 
 enum {
   ACTIVE_THREADS = 0x800000dc, THREAD_STATE = 0x2c8, THREAD_NEXT_ACTIVE = 0x2fc, CONTEXT_LR = 0x84,
-  CONTEXT_SRR0 = 0x198, STACK_DEPTH = 12, MAX_THREADS = 32,
+  CONTEXT_SRR0 = 0x198, STACK_DEPTH = 20, MAX_THREADS = 32,
 };
 
 static int is_guest(uint32_t address) { return (address >= 0x80000000u && address < 0x81800000u) || (address >= 0x90000000u && address < 0x94000000u); }
@@ -23,7 +23,9 @@ void debug_threads(void) {
   fprintf(stderr, "interrupts: cause %08x mask %08x msr %08x os masks %08x %08x pe status %04x\n", hw_read(0xcc003000u, 4),
           hw_read(0xcc003004u, 4), cpu.msr, rd32(0x800000c4), rd32(0x800000c8), hw_read(0xcc00100au, 2));
   for (int n = 0; n < MAX_THREADS && is_guest(thread); n++) {
-    uint32_t stack = rd32(thread + 4);
+    // The thread running now has its registers in the processor, not in its context.
+    int running = thread == rd32(0x800000e4);
+    uint32_t stack = running ? cpu.r[1] : rd32(thread + 4);
     fprintf(stderr, "thread %08x state %u priority %d (base %d) pc %08x link %08x calls:", thread, rd16(thread + THREAD_STATE),
             (int)rd32(thread + 0x2d0), (int)rd32(thread + 0x2d4), rd32(thread + CONTEXT_SRR0), rd32(thread + CONTEXT_LR));
     for (int depth = 0; depth < STACK_DEPTH && is_guest(stack); depth++) {
@@ -73,6 +75,17 @@ void stage_add(int stage, uint64_t ticks) {
 
 // WII_RECOMP_FRAME_LOG=1 prints the time since the last frame shown, for each frame, so a
 // tool can tell an even 60 from frames that come in fits (recomp/tools/race_bench.py).
+// A function built with WII_RECOMP_EMIT_TRACE calls this as it starts: who called it, with
+// what, on which of the game's threads, and when (milliseconds). The first 4,000 calls
+// from the count in WII_RECOMP_TRACE_FROM on are printed.
+void debug_trace_call(unsigned address) {
+  static long seen, from = -1;
+  if (from < 0) from = getenv("WII_RECOMP_TRACE_FROM") ? atol(getenv("WII_RECOMP_TRACE_FROM")) : 0;
+  if (seen++ < from || seen > from + 4000) return;
+  fprintf(stderr, "call %08x from %08x r3 %08x r4 %08x thread %08x at %.2f\n", address, cpu.lr, cpu.r[3], cpu.r[4], rd32(0x800000e4),
+          (double)time_base() / 60750.0);
+}
+
 // With the frame log on, the time since the last picture reached the window: what the
 // eye gets, where "frame" is when the game finished each.
 void stage_shown(void) {
@@ -94,6 +107,9 @@ void stage_frame(float gap_ms) {
     fprintf(stderr, "frame %.2f idle %.2f present %.2f\n", (double)gap_ms, stage_ticks[STAGE_IDLE] / 60750.0,
             stage_ticks[STAGE_PRESENT] / 60750.0);
   }
+  // 3 adds the game's thread about then (its system's "current thread"), for a game
+  // whose pictures come from more than one.
+  else if (frame_log == 3) fprintf(stderr, "frame %.2f thread %08x\n", (double)gap_ms, rd32(0x800000e4));
   else if (frame_log) fprintf(stderr, "frame %.2f\n", (double)gap_ms);
   static long switches_before;
   struct rusage usage;
