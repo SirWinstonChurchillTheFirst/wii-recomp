@@ -131,8 +131,9 @@ typedef struct {
   void (*expect_read)(int depth, const GxRectangle *area);
   int (*read_ready)(unsigned ticket);  // Finished on the card, so finishing won't wait.
   const void *(*read_finish)(unsigned ticket, int *width, int *height);
-  // EFB pokes: one of the game's pixels set to a color, red in the low byte, or a depth.
-  void (*poke)(int depth, int x, int y, uint32_t rgba, float depth_value);
+  // EFB pokes: `width` of the game's pixels along a row, from x, set to a color, red in the
+  // low byte, or a depth.
+  void (*poke)(int depth, int x, int y, int width, uint32_t rgba, float depth_value);
   // The bounding box, as four values from left, right, top, bottom: setting two of them
   // from `first` in order with the draws, and reading all four, waiting for the card.
   // Shaders written with their bounding box on widen it (gx_tev_write_shader). Null where

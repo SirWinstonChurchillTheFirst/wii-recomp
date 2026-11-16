@@ -3,6 +3,8 @@
 #include "../../recomp/runtime/gx_fifo.c"
 #include "../../recomp/runtime/timeline.c"
 #include "../harness.h"
+int gx_efb_pokes_waiting;
+void gx_efb_send_pokes(void) {}
 void stage_add(int s, uint64_t t) {}
 const Title *title = &(Title){0};
 void poll_interrupts(void) {}

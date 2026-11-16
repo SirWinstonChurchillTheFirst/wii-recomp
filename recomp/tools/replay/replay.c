@@ -193,6 +193,7 @@ static void run_actions(void) {
   for (int i = 0; i < action_count; i++) {
     if (actions[i].kind == 'w') {
       gx_efb_write(actions[i].address, actions[i].value, 4);
+      gx_efb_send_pokes();  // Each stands alone here: nothing else follows to send it.
     } else if (actions[i].kind == 'b') {
       uint32_t value[4] = {0, 0, 0, 0};
       for (int side = 0; side < 4; side++) gx_bounding_box_read(0xcc001010u + (uint32_t)side * 2, &value[side]);

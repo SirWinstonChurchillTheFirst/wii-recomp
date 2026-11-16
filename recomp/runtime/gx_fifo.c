@@ -631,6 +631,7 @@ static void send_burst(void) {
 }
 
 static void feed_stream(uint32_t value, int bytes) {
+  if (gx_efb_pokes_waiting) gx_efb_send_pokes();
   if (burst_used + (uint32_t)bytes <= BURST_BYTES) {  // As it nearly always does: the value whole, high byte first.
     uint8_t *at = burst + burst_used;
     if (bytes == 4) at[0] = (uint8_t)(value >> 24), at[1] = (uint8_t)(value >> 16), at[2] = (uint8_t)(value >> 8), at[3] = (uint8_t)value;

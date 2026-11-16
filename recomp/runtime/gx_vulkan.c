@@ -2385,11 +2385,11 @@ static const void *read_finish(unsigned ticket, int *width, int *height) {
   return reads[slot].on_processor ? reads[slot].processor : reads[slot].ring.mapped;
 }
 
-// A poke sets the game's pixel, as many of the picture's as cover it, from staging memory.
-static void poke(int depth, int x, int y, uint32_t rgba, float depth_value) {
+// A poke sets the game's pixels, as many of the picture's as cover them, from staging memory.
+static void poke(int depth, int x, int y, int pixels, uint32_t rgba, float depth_value) {
   flush_run();  // Strips gathered so far go first.
   ready_to_read();
-  int left = x * EFB_SCALE, top = y * EFB_SCALE, width = (x + 1) * EFB_SCALE - left, height = (y + 1) * EFB_SCALE - top;
+  int left = x * EFB_SCALE, top = y * EFB_SCALE, width = (x + pixels) * EFB_SCALE - left, height = (y + 1) * EFB_SCALE - top;
   VkDeviceSize bytes = (VkDeviceSize)width * (VkDeviceSize)height * BYTES_PER_PIXEL;
   VkDeviceSize at = vk_ring_take(&vk.frame->staging, bytes, BYTES_PER_PIXEL);
   if (at == (VkDeviceSize)-1) {

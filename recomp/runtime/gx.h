@@ -251,6 +251,9 @@ void gx_copy_frame_shown(void);
 // EFB peeks, pokes and the bounding box (gx_efb.c), for hardware.c.
 int gx_efb_read(uint32_t address, int bytes, uint32_t *value);
 int gx_efb_write(uint32_t address, uint32_t value, int bytes);
+// Pokes gathered into a run reach the picture: before anything else the processor does with the hardware.
+extern int gx_efb_pokes_waiting;
+void gx_efb_send_pokes(void);
 void gx_efb_changed(void);
 void gx_efb_shown(void);  // A picture was shown: changed, with nothing drawn since.
 int gx_screen_copy_went_to(uint32_t address);  // A recent copy to the screen went there.

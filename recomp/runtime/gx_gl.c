@@ -483,8 +483,8 @@ static const void *read_finish(unsigned ticket, int *width, int *height) {
   return reads[slot].pixels;
 }
 
-// A poke clears the pixels covering the game's one, with everything a clear follows put back after.
-static void poke(int depth, int x, int y, uint32_t rgba, float depth_value) {
+// A poke clears the pixels covering the game's ones, with everything a clear follows put back after.
+static void poke(int depth, int x, int y, int pixels, uint32_t rgba, float depth_value) {
   GLboolean colors[4], depth_mask, scissor_on = glIsEnabled(GL_SCISSOR_TEST);
   GLint scissor_box[4];
   glGetBooleanv(GL_COLOR_WRITEMASK, colors);
@@ -493,7 +493,7 @@ static void poke(int depth, int x, int y, uint32_t rgba, float depth_value) {
   glBindFramebuffer(GL_FRAMEBUFFER, efb);
   glEnable(GL_SCISSOR_TEST);
   int left = x * EFB_SCALE, bottom = (EFB_HEIGHT - y - 1) * EFB_SCALE;
-  glScissor(left, bottom, (x + 1) * EFB_SCALE - left, (EFB_HEIGHT - y) * EFB_SCALE - bottom);
+  glScissor(left, bottom, (x + pixels) * EFB_SCALE - left, (EFB_HEIGHT - y) * EFB_SCALE - bottom);
   if (depth) {
     glDepthMask(GL_TRUE);
     glClearDepth(depth_value);

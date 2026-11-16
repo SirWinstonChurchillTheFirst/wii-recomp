@@ -34,6 +34,8 @@ int vi_read(uint32_t a, uint32_t *v) { return 0; }
 void vi_timing_changed(void) {}
 int gx_efb_read(uint32_t a, int n, uint32_t *v) { return 0; }
 int gx_efb_write(uint32_t a, uint32_t v, int n) { return 0; }
+int gx_efb_pokes_waiting;
+void gx_efb_send_pokes(void) {}
 static int resets_told, gaps;
 void stm_reset_button(void) { resets_told++; }
 void stm_power_button(void) {}
