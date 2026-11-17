@@ -404,6 +404,9 @@ static _Atomic int handed_waiting, handed_done;
 
 static void run_handed(int between) {
   if (!atomic_load_explicit(&handed_waiting, memory_order_acquire) || (between && !handed.soon)) return;
+  // Work handed in between two draws may leave the backend's draw state (a held copy read
+  // back when the game touches its page ends the pass): the next draw sets it all again.
+  gx_settings_written++;
   handed.work(handed.argument);
   atomic_store_explicit(&handed_waiting, 0, memory_order_relaxed);
   atomic_store_explicit(&handed_done, 1, memory_order_release);
