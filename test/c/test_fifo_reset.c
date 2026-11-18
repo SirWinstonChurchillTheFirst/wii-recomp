@@ -40,7 +40,10 @@ int gx_vertex_format;
 GxCalledList gx_called_list;
 int gx_read_list_vertices(const uint8_t *d, int f, int c, Vertex *o) { return c; }
 uint64_t watch_range(uint32_t a, uint32_t b) { return 0; }
+int gx_lists_kept(void) { return 0; }
+int gx_recording;
 void gx_record_command(const uint8_t *b, uint32_t c) {}
+void stage_sample_thread(int graphics) {}
 void gx_record_frame_shown(void) {}
 void gx_record_list_enter(void) {}
 void gx_record_list_leave(void) {}
