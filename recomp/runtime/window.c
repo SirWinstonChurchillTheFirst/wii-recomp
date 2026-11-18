@@ -214,6 +214,7 @@ void window_run(void) {
     pads_poll();
   }
   if (stop_signal) fprintf(stderr, "console: asked to stop (signal %d)\n", (int)stop_signal);
+  else fprintf(stderr, "console: the window was asked to close\n");  // By the window system: its close button, or a program closing it.
   if (power_button_press()) {
     fprintf(stderr, "console: the power button is pressed\n");
     for (double until = glfwGetTime() + POWER_OFF_SECONDS; glfwGetTime() < until;) {
