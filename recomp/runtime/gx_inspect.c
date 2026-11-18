@@ -44,9 +44,13 @@ static void dump_draw(const TevKey *tev, unsigned maps, int format, int primitiv
   fprintf(dump_file, "draw %d%s prim %d verts %d format %d desc %05x %04x vat %08x stages %d gens %u colors %x\n", draw_number,
           skipped ? " SKIPPED" : "", primitive, count, format, gx.cp[CP_DESCRIPTOR_LOW], gx.cp[CP_DESCRIPTOR_HIGH], gx.cp[CP_FORMAT_A + format],
           tev->stages, gx.bp[BP_GEN_MODE] & 15, gx.xf[XF_COLOR_CONTROL]);
-  fprintf(dump_file, "  z %06x blend %06x alpha test %06x cull %u\n", gx.bp[BP_Z_MODE], gx.bp[BP_BLEND], gx.bp[BP_ALPHA_TEST], (gx.bp[BP_GEN_MODE] >> 14) & 3);
+  fprintf(dump_file, "  z %06x blend %06x alpha test %06x cull %u frozen depth %u pixel format %u\n", gx.bp[BP_Z_MODE], gx.bp[BP_BLEND], gx.bp[BP_ALPHA_TEST],
+          (gx.bp[BP_GEN_MODE] >> 14) & 3, (gx.bp[BP_GEN_MODE] >> 19) & 1, gx.bp[0x43] & 7);
   // Where it lands: the viewport's scale and offset, the projection (its kind last), the
   // scissor, and the constant alpha and colour registers a fade is often done with.
+  // Which matrices the position and the coordinates go through: the command unit's two
+  // registers, and the transform unit's own copies of them, which should say the same.
+  fprintf(dump_file, "  matrix indices %08x %08x, transform unit's %08x %08x\n", gx.cp[0x30], gx.cp[0x40], gx.xf[0x1018], gx.xf[0x1019]);
   float view[6], projection[6];
   for (int i = 0; i < 6; i++) memcpy(&view[i], &gx.xf[0x101a + i], 4), memcpy(&projection[i], &gx.xf[0x1020 + i], 4);
   fprintf(dump_file, "  viewport %.1f %.1f %.1f %.1f %.1f %.1f projection %.4f %.4f %.4f %.4f %.4f %.4f kind %u scissor %06x %06x offset %06x\n", view[0], view[1],

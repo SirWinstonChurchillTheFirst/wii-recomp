@@ -67,13 +67,18 @@ static void cmpr_tile(const uint8_t *s, uint8_t *out, uint32_t x, uint32_t y, ui
   uint8_t colors[4][4];
   rgb565(c0, colors[0]);
   rgb565(c1, colors[1]);
+  // As Dolphin's DecodeDXTBlock (TextureDecoder_Common.cpp) has it from the chip: the two
+  // colors between are 5/8 and 3/8 mixes, not thirds, and a see-through pixel keeps the
+  // average color, where a PC's DXT1 makes it black. Games count on that color: Mario Power
+  // Tennis reads the "Versus" lettering's color beside where it reads its shape, and black
+  // there painted most of the gold letters black.
   for (int i = 0; i < 3; i++) {
     if (c0 > c1) {
-      colors[2][i] = (uint8_t)((2 * colors[0][i] + colors[1][i]) / 3);
-      colors[3][i] = (uint8_t)((colors[0][i] + 2 * colors[1][i]) / 3);
+      colors[2][i] = (uint8_t)((colors[1][i] * 3 + colors[0][i] * 5) >> 3);
+      colors[3][i] = (uint8_t)((colors[0][i] * 3 + colors[1][i] * 5) >> 3);
     } else {
       colors[2][i] = (uint8_t)((colors[0][i] + colors[1][i]) / 2);
-      colors[3][i] = 0;
+      colors[3][i] = colors[2][i];
     }
   }
   colors[2][3] = 255;

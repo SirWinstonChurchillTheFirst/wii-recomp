@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "dff.h"
 #include "gx_backend.h"
+#include "gx_inspect.h"
 #include "gx_vulkan.h"
 
 enum {
@@ -258,8 +259,17 @@ int main(int argc, char **argv) {
   clear_whole_picture(dff);
 
   uint32_t frames = dff->frame_count < limit ? dff->frame_count : limit, saved = 0, no_copy = 0, several = 0;
+  // For finding which draw paints what, as the control pipe's "dump" and "skip" do in a game:
+  // REPLAY_DUMP=<frame> writes that frame's draws to the file WII_RECOMP_GX_INSPECT names
+  // (the dump covers the frame after the one it is asked in), REPLAY_SKIP=<first>-<last>
+  // leaves a range of every frame's draws out.
+  const char *dump_text = getenv("REPLAY_DUMP"), *skip_text = getenv("REPLAY_SKIP");
+  long dump_frame = dump_text ? strtol(dump_text, 0, 10) : -1;
+  int skip_first = 0, skip_last = 0;
+  if (skip_text && sscanf(skip_text, "%d-%d", &skip_first, &skip_last) == 2) gx_inspect_skip(skip_first, skip_last);
   for (uint32_t i = 0; i < frames; i++) {
     pictures_in_frame = 0;
+    if ((long)i + 1 == dump_frame) gx_inspect_dump();
     play_frame(&dff->frames[i]);
     if (pictures_in_frame > 1) several++;
     if (!pictures_in_frame) no_copy++;

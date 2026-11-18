@@ -516,7 +516,7 @@ Dolphin lists 223 instruction handlers in `Interpreter_Tables.cpp`. Every one is
 | `vtx.i4_i8_ia4_ia8` | I4, I8, IA4, IA8 | done | `runtime/gx_texture.c:98-105` |  |
 | `vtx.rgb565_rgb5a3_rgba8` | RGB565, RGB5A3, RGBA8 | done | `runtime/gx_texture.c:106-110` |  |
 | `vtx.c4_c8_c14x2` | C4, C8, C14X2 | partial | `runtime/gx_texture.c:111-117` | Decoders right, palette offset wrong. |
-| `vtx.cmpr` | CMPR | done | `runtime/gx_texture.c:52-75` | Blend weights differ slightly from hardware. |
+| `vtx.cmpr` | CMPR | done | `runtime/gx_texture.c:64-93` | Blend weights and the color of see-through pixels as Dolphin's `DecodeDXTBlock` has them. |
 | `vtx.tlut_formats_ia8_rgb565_rgb5a3` | TLUT formats IA8, RGB565, RGB5A3 | done | `runtime/gx_texture.c:43-49` |  |
 | `vtx.tlut_load` | TLUT load | partial | `runtime/gx_texture.c:20-25` | Offset unit. |
 | `vtx.wrap_clamp_repeat_mirror` | Wrap clamp, repeat, mirror | done | `runtime/gx_draw.c:67` |  |

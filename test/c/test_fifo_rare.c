@@ -66,11 +66,11 @@ int main(void) {
   CHECK_EQ(gx.bp[0xf3], 0x123456);
   CHECK_EQ(gaps, 0);
 
-  // Settings we don't follow are named only when set.
+  // Frozen depth is followed now, so setting it names nothing: only a frozen draw with no
+  // plane kept yet does (gx_tev.c).
   const uint8_t settings[] = {COMMAND_BP, BP_PRELOAD, 0, 0, 0, COMMAND_BP, BP_GEN_MODE, 0x08, 0, 0};
   gx_parse(settings, sizeof settings);
-  CHECK_EQ(gaps, 1);
-  CHECK(last_gap && !strcmp(last_gap, "pixel.z_freeze"));
+  CHECK_EQ(gaps, 0);
   const uint8_t clip[] = {COMMAND_XF, 0, 1, 0x10, 0x04, 0, 0, 0, 0, 0, 0, 0, 1};  // 0x1004 and 0x1005.
   gx_parse(clip, sizeof clip);
   CHECK(last_gap && !strcmp(last_gap, "gx.0x1005_clip_disable"));
