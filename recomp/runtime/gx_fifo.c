@@ -206,6 +206,10 @@ static void hold_for_field(uint32_t address) {
     TIMELINE_BEGIN("held for the field");
     while (atomic_load(&fields_begun) == field && host_now() < give_up) {
       run_handed(1);
+      // A picture held for its moment on the screen comes due during this wait as at any
+      // other time: left until the wait was over, it was shown late and the next one right
+      // after it, two pictures 3 ms apart and then none for 30.
+      if (gx_backend->show_held) gx_backend->show_held();
       idle_wait();
     }
     TIMELINE_END("held for the field");

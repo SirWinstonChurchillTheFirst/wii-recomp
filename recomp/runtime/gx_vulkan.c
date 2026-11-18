@@ -1718,10 +1718,16 @@ static void show_or_hold(uint32_t image, int at_once) {
 }
 
 static void present(const GxRectangle *from) {
-  enum { ABOUT_DUE_NANOSECONDS = 2000000 };
   int unshown = 0;
   if (held_show.waiting) {
-    if (held_show.due > host_nanoseconds() + ABOUT_DUE_NANOSECONDS) unshown = 1;
+    // The held picture goes first if it's due within half a field: the next one has come
+    // about a field after it, as it should. Pictures come a field apart by the game's count
+    // of fields and are shown a field apart by this clock, and when the two were a few
+    // milliseconds out of step every second or third picture was dropped as "too soon"
+    // (Mario & Sonic at the Olympic Winter Games' menus: pictures 30 ms apart).
+    double rate = vi_field_rate();
+    uint64_t half_field = (uint64_t)(0.5e9 / (rate > 1 ? rate : 60.0));
+    if (held_show.due > host_nanoseconds() + half_field) unshown = 1;
     else show_now(held_show.due);
   }
   flush_run();  // Strips gathered so far go first.
