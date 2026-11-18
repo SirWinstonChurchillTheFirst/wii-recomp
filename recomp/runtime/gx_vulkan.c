@@ -1174,8 +1174,28 @@ static int join_strip(int32_t first, int count) {
   return 1;
 }
 
+// Mario & Sonic at the Olympic Winter Games draws a slope as 21,000 strips a frame, most of
+// four vertices, nearly all with nothing set between them, and on a small processor the
+// checks below cost each of them more than its triangles. A strip that follows one that
+// went the whole way and joined the run, with nothing handed over since but its vertices
+// (gx_draw_unchanged) and nothing recorded since (the run is still open, and everything
+// that records sends the run first), would find every check as the last did. So it joins
+// the run at once. What a draw does for itself each time is still done: depth's changes
+// are counted, and a part of the pass or an early read that has come due is made the usual way.
+static int strip_repeats;  // The last draw joined the run, in the picture, with no layer at work and no bounds of its own.
+
 static void draw(int primitive, int count) {
   if (!count) return;
+  if (gx_draw_unchanged && strip_repeats && run.open && primitive == PRIM_STRIP && !blocks_waiting && restarts == reserved_restarts
+      && !(kick_draws > 0 && draws_since_submit >= (unsigned)kick_draws) && !early_read_due()) {
+    if (state_in_use.depth_write) depth_changed(), flat_depth.known = 0, early_depth_changed();
+    if (join_strip((int32_t)(reserved_at / reserved_stride), count)) {
+      recorded_draws++;
+      draws_since_submit++;
+      return;
+    }
+  }
+  strip_repeats = 0;
   if (state_in_use.depth_write) depth_changed();
   {
     // In the strip, a pass should touch only the small pictures being made, and those
@@ -1267,7 +1287,10 @@ static void draw(int primitive, int count) {
   int32_t first = (int32_t)(reserved_at / reserved_stride);
   recorded_draws++;
   draws_since_submit++;
-  if (primitive == PRIM_STRIP && join_strip(first, count)) return;
+  if (primitive == PRIM_STRIP && join_strip(first, count)) {
+    strip_repeats = !in_strip && !gx_bounds_known && empty_layer.step == LAYER_IDLE && viewport_wanted.y + viewport_wanted.height < VISIBLE_HEIGHT * EFB_SCALE;
+    return;
+  }
   flush_run();
   if (primitive == PRIM_TRIANGLES) {
     vkCmdDraw(commands, (uint32_t)count, 1, (uint32_t)first, 0);

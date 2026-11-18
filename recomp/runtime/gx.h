@@ -90,6 +90,7 @@ int gx_read_vertices(const uint8_t *data, int format, int count, Vertex *out);
 typedef struct { uint32_t address, bytes; uint64_t watched; const uint8_t *start; } GxCalledList;
 extern GxCalledList gx_called_list;
 int gx_read_list_vertices(const uint8_t *data, int format, int count, Vertex *out);
+int gx_lists_kept(void);
 extern unsigned gx_list_draws_reused, gx_list_draws_decoded;
 // How many normals the current vertices carry: 0, 1, or 3 with binormal and tangent.
 int gx_vertex_normals(int format);
@@ -127,6 +128,7 @@ void gx_save_palettes(uint8_t *texture_memory);
 
 // Recording frames for recomp/tools/replay (gx_record.c).
 void gx_record_request(int frames, const char *path);
+extern int gx_recording;
 void gx_record_command(const uint8_t *bytes, uint32_t count);
 void gx_record_frame_shown(void);
 void gx_record_list_enter(void);

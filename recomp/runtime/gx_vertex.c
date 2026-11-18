@@ -1,6 +1,7 @@
 // Vertices: decodes each format the game declares into a buffer for the vertex
 // shader, which applies the matrices (gx_transform.c) and lights (gx_light.c).
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -307,33 +308,96 @@ static int read_vertices_general(const uint8_t *data, int format, int count, Ver
 }
 
 // The same, worked out once a format: each part the vertex has becomes a step, at a fixed
-// place in the vertex's bytes, and the encodings games use most get a step of their own.
-// Galaxy 2 sends 150,000 vertices a frame, nearly all four parts indexed by 16 bits, and
-// the general decoder spent about 130 cycles on each: checking each address against the
-// memory map, and reloading the format's fields that didn't fit in registers. Every step
-// writes what the general decoder would, from the same conversions, and anything less
-// common goes through those conversions as they are.
-enum {
-  STEP_FLOAT3, STEP_S16_3, STEP_S16_2, STEP_RGBA8,  // Indexed by 16 bits.
-  STEP_COMPONENTS, STEP_COLOR, STEP_NORMALS,      // Any kind and type, as the general decoder reads them.
-  MOST_STEPS = 12,
-};
+// place in the vertex's bytes, read by a function made for its encoding. Galaxy 2 sends
+// 150,000 vertices a frame, nearly all four parts indexed by 16 bits, and the general
+// decoder spent about 130 cycles on each: checking each address against the memory map,
+// and reloading the format's fields that didn't fit in registers. Mario & Sonic at the
+// Olympic Winter Games sends as many in 21,000 draws of some sixty formats, so what a
+// draw needs before its first vertex is kept as well, until a vertex register is written.
+// Every reader writes what the general decoder would, from the same conversions: colors
+// come from tables of those conversions' results, as a division for each value cost more
+// than the rest of a vertex.
+typedef void (*ReadPart)(const uint8_t *source, float *to, float scale);
+
+static inline uint32_t big16(const uint8_t *p) { return ((uint32_t)p[0] << 8) | p[1]; }
+static inline uint32_t big32_at(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+#define READER(name, count, value) \
+  static void name(const uint8_t *p, float *to, float scale) { (void)scale; for (int i = 0; i < count; i++) to[i] = value; }
+#define READERS(count) \
+  READER(read_u8_##count, count, (float)p[i] * scale) \
+  READER(read_s8_##count, count, (float)(int8_t)p[i] * scale) \
+  READER(read_u16_##count, count, (float)(uint16_t)big16(p + i * 2) * scale) \
+  READER(read_s16_##count, count, (float)(int16_t)big16(p + i * 2) * scale) \
+  READER(read_float_##count, count, as_float(big32_at(p + i * 4)))
+READERS(1) READERS(2) READERS(3)
+#undef READERS
+#undef READER
+
+static ReadPart components_reader(int type, int count) {
+  static const ReadPart readers[3][5] = {
+    {read_u8_1, read_s8_1, read_u16_1, read_s16_1, read_float_1},
+    {read_u8_2, read_s8_2, read_u16_2, read_s16_2, read_float_2},
+    {read_u8_3, read_s8_3, read_u16_3, read_s16_3, read_float_3},
+  };
+  return count >= 1 && count <= 3 ? readers[count - 1][type > COMPONENT_FLOAT ? COMPONENT_FLOAT : type] : 0;
+}
+
+// Each value a color's bits can have, as read_color works it out.
+static float of_31[32], of_63[64], of_15[16], of_255[256];
+__attribute__((constructor)) static void fill_color_tables(void) {
+  for (int i = 0; i < 32; i++) of_31[i] = (float)i / 31;
+  for (int i = 0; i < 64; i++) of_63[i] = (float)i / 63;
+  for (int i = 0; i < 16; i++) of_15[i] = (float)i / 15;
+  for (int i = 0; i < 256; i++) of_255[i] = (float)i / 255;
+}
+
+static void read_rgb565(const uint8_t *p, float *to, float scale) {
+  (void)scale;
+  uint32_t v = big16(p);
+  to[0] = of_31[v >> 11], to[1] = of_63[(v >> 5) & 63], to[2] = of_31[v & 31], to[3] = 1;
+}
+static void read_rgb8(const uint8_t *p, float *to, float scale) {
+  (void)scale;
+  to[0] = of_255[p[0]], to[1] = of_255[p[1]], to[2] = of_255[p[2]], to[3] = 1;
+}
+static void read_rgba4(const uint8_t *p, float *to, float scale) {
+  (void)scale;
+  to[0] = of_15[p[0] >> 4], to[1] = of_15[p[0] & 15], to[2] = of_15[p[1] >> 4], to[3] = of_15[p[1] & 15];
+}
+static void read_rgba6(const uint8_t *p, float *to, float scale) {
+  (void)scale;
+  uint32_t v = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+  to[0] = of_63[v >> 18], to[1] = of_63[(v >> 12) & 63], to[2] = of_63[(v >> 6) & 63], to[3] = of_63[v & 63];
+}
+static void read_rgba8(const uint8_t *p, float *to, float scale) {
+  (void)scale;
+  to[0] = of_255[p[0]], to[1] = of_255[p[1]], to[2] = of_255[p[2]], to[3] = of_255[p[3]];
+}
+
+// A type past the last reads as the last, as read_color has it.
+static ReadPart color_reader(int type) {
+  static const ReadPart readers[] = {read_rgb565, read_rgb8, read_rgb8, read_rgba4, read_rgba6, read_rgba8};
+  return readers[type > COLOR_RGBA8 ? COLOR_RGBA8 : type];
+}
+
+enum { MOST_STEPS = 12 };
 typedef struct {
-  uint8_t op, kind, array, type, components;
+  ReadPart read;     // None for a normal with its tangent and binormal, which the vertex keeps apart.
+  uint8_t kind, array;
   uint16_t at, out;  // The part's place in the stream's vertex, and in Vertex.
-  uint32_t direct;   // Its size when it's in the stream itself.
   float scale;
 } Step;
 typedef struct {
-  int ready, steps_count, color_slot_of[2];
+  int ready, steps_count;
   uint32_t bytes;
   Step steps[MOST_STEPS];
 } Plan;
 static Plan plans[8];
 static unsigned plan_written[8];
 
-static void plan_step(Plan *plan, int op, int kind, int array, int type, int components, uint32_t at, size_t out, uint32_t direct, float scale) {
-  plan->steps[plan->steps_count++] = (Step){(uint8_t)op, (uint8_t)kind, (uint8_t)array, (uint8_t)type, (uint8_t)components, (uint16_t)at, (uint16_t)out, direct, scale};
+static void plan_step(Plan *plan, ReadPart read, int kind, int array, uint32_t at, size_t out, float scale) {
+  plan->steps[plan->steps_count++] = (Step){read, (uint8_t)kind, (uint8_t)array, (uint16_t)at, (uint16_t)out, scale};
 }
 
 static const Plan *plan_for(int format) {
@@ -348,25 +412,19 @@ static const Plan *plan_for(int format) {
   for (int i = 0; i < TEXTURES; i++) at += (uint32_t)f->texture_index[i];
   if (f->position != KIND_NONE) {
     uint32_t direct = (uint32_t)f->position_components * component_bytes(f->position_type);
-    int op = f->position == KIND_INDEX16 && f->position_components == 3 && f->position_type == COMPONENT_FLOAT ? STEP_FLOAT3
-             : f->position == KIND_INDEX16 && f->position_components == 3 && f->position_type == COMPONENT_S16  ? STEP_S16_3
-                                                                                                            : STEP_COMPONENTS;
-    plan_step(plan, op, f->position, ARRAY_POSITION, f->position_type, f->position_components, at, offsetof(Vertex, position), direct, f->position_scale);
+    plan_step(plan, components_reader(f->position_type, f->position_components), f->position, ARRAY_POSITION, at, offsetof(Vertex, position), f->position_scale);
     at += attribute_bytes(f->position, direct);
   }
   if (f->normal != KIND_NONE) {
     uint32_t direct = (uint32_t)f->normal_components * component_bytes(f->normal_type);
-    int op = f->normal == KIND_INDEX16 && f->normal_components == 3 && f->normal_type == COMPONENT_S16 ? STEP_S16_3 : STEP_NORMALS;
-    plan_step(plan, op, f->normal, ARRAY_NORMAL, f->normal_type, f->normal_components, at, offsetof(Vertex, normal), direct, f->normal_scale);
+    plan_step(plan, f->normal_components == 3 ? components_reader(f->normal_type, 3) : 0, f->normal, ARRAY_NORMAL, at, offsetof(Vertex, normal), f->normal_scale);
     at += attribute_bytes(f->normal, direct) * (uint32_t)f->normal_indexes;
   }
   int slot[2] = {0, f->color[0] == KIND_NONE ? 0 : 1};
   for (int i = 0; i < 2; i++) {
     if (f->color[i] == KIND_NONE) continue;
-    uint32_t direct = color_bytes(f->color_type[i]);
-    int op = f->color[i] == KIND_INDEX16 && f->color_type[i] == COLOR_RGBA8 ? STEP_RGBA8 : STEP_COLOR;
-    plan_step(plan, op, f->color[i], ARRAY_COLOR + i, f->color_type[i], 4, at, offsetof(Vertex, color) + (size_t)slot[i] * sizeof(float[4]), direct, 0);
-    at += attribute_bytes(f->color[i], direct);
+    plan_step(plan, color_reader(f->color_type[i]), f->color[i], ARRAY_COLOR + i, at, offsetof(Vertex, color) + (size_t)slot[i] * sizeof(float[4]), 0);
+    at += attribute_bytes(f->color[i], color_bytes(f->color_type[i]));
   }
   for (int i = 0; i < TEXTURES; i++) {
     if (f->texture[i] == KIND_NONE) continue;
@@ -375,9 +433,8 @@ static const Plan *plan_for(int format) {
       break;
     }
     uint32_t direct = (uint32_t)f->texture_components[i] * component_bytes(f->texture_type[i]);
-    int op = f->texture[i] == KIND_INDEX16 && f->texture_components[i] == 2 && f->texture_type[i] == COMPONENT_S16 ? STEP_S16_2 : STEP_COMPONENTS;
-    plan_step(plan, op, f->texture[i], ARRAY_TEXTURE + i, f->texture_type[i], f->texture_components[i], at, offsetof(Vertex, uv) + (size_t)i * sizeof(float[2]),
-              direct, f->texture_scale[i]);
+    plan_step(plan, components_reader(f->texture_type[i], f->texture_components[i]), f->texture[i], ARRAY_TEXTURE + i, at,
+              offsetof(Vertex, uv) + (size_t)i * sizeof(float[2]), f->texture_scale[i]);
     at += attribute_bytes(f->texture[i], direct);
   }
   plan->bytes = format_bytes[format];
@@ -398,61 +455,78 @@ static Array array_at(uint32_t base, uint32_t stride) {
   return (Array){GUEST_BASE + physical, room, stride, room == 0};
 }
 
-static inline uint32_t big16(const uint8_t *p) { return ((uint32_t)p[0] << 8) | p[1]; }
-static inline uint32_t big32_at(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
-
 static inline const uint8_t *element(const Array *a, int array, uint32_t index) {
   if (a->unmapped) return host((array_base[array] + index * array_stride[array]) | 0x80000000u);
   uint32_t offset = index * a->stride;
   return offset < a->room ? a->first + offset : 0;
 }
 
-static int read_vertices_planned(const Plan *plan, const uint8_t *data, int count, Vertex *out, const Vertex *start, const Format *f) {
+// What a draw needs before its first vertex: the vertex each starts as, where each step's
+// array is, and which coordinates carry a matrix index. All of it comes from the vertex
+// registers, so it holds until one is written.
+typedef struct {
+  unsigned written;
+  Vertex start;
   Array arrays[MOST_STEPS];
-  for (int k = 0; k < plan->steps_count; k++) arrays[k] = array_at(array_base[plan->steps[k].array], array_stride[plan->steps[k].array]);
-  int coordinate_matrices[TEXTURES], coordinate_matrix_count = 0;
-  for (int i = 0; i < TEXTURES; i++) {
-    if (f->texture_index[i]) coordinate_matrices[coordinate_matrix_count++] = i;
+  int coordinate_matrices[TEXTURES], coordinate_matrix_count;
+} Prepared;
+static Prepared prepared[8];
+
+static const Prepared *prepare(int format, const Plan *plan, const Format *f) {
+  Prepared *ready = &prepared[format];
+  if (ready->written == gx_cp_written) return ready;
+  ready->written = gx_cp_written;
+  // The arrays' places are registers too, kept for element(); the general decoder sets the same.
+  for (int a = 0; a < ARRAYS; a++) array_base[a] = gx.cp[CP_ARRAY_BASE + a], array_stride[a] = gx.cp[CP_ARRAY_STRIDE + a] & 0xff;
+  if (f->normal_components == ALL_NORMAL_VALUES && f->normal != KIND_NONE && (f->texture[VERTEX_NORMALS_UV] || f->texture[VERTEX_NORMALS_UV + 1] || f->texture[VERTEX_NORMALS_UV + 2])) {
+    debug_unsupported("vtx.normal_nbt_9_values", "texture coordinates 5 to 7 beside binormal and tangent", (uint32_t)format);
   }
+  vertex_start(f, &ready->start);
+  for (int k = 0; k < plan->steps_count; k++) ready->arrays[k] = array_at(array_base[plan->steps[k].array], array_stride[plan->steps[k].array]);
+  ready->coordinate_matrix_count = 0;
+  for (int i = 0; i < TEXTURES; i++) {
+    if (f->texture_index[i]) ready->coordinate_matrices[ready->coordinate_matrix_count++] = i;
+  }
+  return ready;
+}
+
+static int read_vertices_planned(const Plan *plan, const Prepared *ready, const uint8_t *data, int count, Vertex *out, const Format *f) {
+  const Step *steps = plan->steps;
+  const int steps_count = plan->steps_count, position_index = f->position_index, coordinate_matrix_count = ready->coordinate_matrix_count;
+  const uint32_t bytes = plan->bytes;
   int kept = 0;
   for (int n = 0; n < count; n++) {
-    const uint8_t *vertex = data + (size_t)n * plan->bytes;
+    const uint8_t *vertex = data + (size_t)n * bytes;
     Vertex *v = &out[kept];
-    *v = *start;
-    uint32_t matrix_at = 0;
-    if (f->position_index) v->matrix[VERTEX_MATRIX_POSITION] = vertex[matrix_at++] & MATRIX_INDEX_MASK;
-    for (int k = 0; k < coordinate_matrix_count; k++) v->matrix[VERTEX_MATRIX_COORDINATE + coordinate_matrices[k]] = vertex[matrix_at++] & MATRIX_INDEX_MASK;
+    *v = ready->start;
+    if (position_index | coordinate_matrix_count) {
+      uint32_t matrix_at = 0;
+      if (position_index) v->matrix[VERTEX_MATRIX_POSITION] = vertex[matrix_at++] & MATRIX_INDEX_MASK;
+      for (int k = 0; k < coordinate_matrix_count; k++) v->matrix[VERTEX_MATRIX_COORDINATE + ready->coordinate_matrices[k]] = vertex[matrix_at++] & MATRIX_INDEX_MASK;
+    }
     int skipped = 0;
-    for (int k = 0; k < plan->steps_count; k++) {
-      const Step *step = &plan->steps[k];
-      const uint8_t *at = vertex + step->at;
-      float *to = (float *)((uint8_t *)v + step->out);
-      if (step->array == ARRAY_POSITION) skipped = skips_vertex(at, step->kind);
-      const uint8_t *source;
-      if (step->kind == KIND_DIRECT) source = at;
-      else source = element(&arrays[k], step->array, step->kind == KIND_INDEX16 ? big16(at) : at[0]);
+    for (int k = 0; k < steps_count; k++) {
+      const Step *step = &steps[k];
+      const uint8_t *at = vertex + step->at, *source;
+      if (step->kind == KIND_INDEX8) {
+        uint32_t index = at[0];
+        if (step->array == ARRAY_POSITION) skipped = index == NULL_INDEX8;
+        source = element(&ready->arrays[k], step->array, index);
+      } else if (step->kind == KIND_INDEX16) {
+        uint32_t index = big16(at);
+        if (step->array == ARRAY_POSITION) skipped = index == NULL_INDEX16;
+        source = element(&ready->arrays[k], step->array, index);
+      } else {
+        source = at;
+      }
       if (!source) continue;
-      switch (step->op) {
-        case STEP_FLOAT3:
-          to[0] = as_float(big32_at(source)), to[1] = as_float(big32_at(source + 4)), to[2] = as_float(big32_at(source + 8));
-          break;
-        case STEP_S16_3:
-          to[0] = (float)(int16_t)big16(source) * step->scale, to[1] = (float)(int16_t)big16(source + 2) * step->scale;
-          to[2] = (float)(int16_t)big16(source + 4) * step->scale;
-          break;
-        case STEP_S16_2:
-          to[0] = (float)(int16_t)big16(source) * step->scale, to[1] = (float)(int16_t)big16(source + 2) * step->scale;
-          break;
-        case STEP_RGBA8:
-          for (int c = 0; c < 4; c++) to[c] = (float)source[c] / 255;
-          break;
-        case STEP_COMPONENTS: read_components(source, step->type, step->scale, step->components, to); break;
-        case STEP_COLOR: read_color(source, step->type, to); break;
-        default: {  // Normals, with the tangent and binormal of nine values after it.
-          uint32_t size = component_bytes(f->normal_type);
-          float *parts[3] = {v->normal, v->tangent, v->binormal};
-          for (uint32_t part = 0; part < (uint32_t)f->normal_components / 3; part++) read_normal(source + part * 3 * size, f, parts[part]);
-        }
+      float *to = (float *)((uint8_t *)v + step->out);
+      if (step->read) {
+        step->read(source, to, step->scale);
+      } else {  // Normals, with the tangent and binormal of nine values after it.
+        uint32_t size = component_bytes(f->normal_type);
+        float *parts[3] = {v->normal, v->tangent, v->binormal};
+        for (uint32_t part = 0; part < (uint32_t)f->normal_components / 3; part++) read_normal(source + part * 3 * size, f, parts[part]);
       }
     }
     if (n == count - 1) keep_last_normals(f, v);
@@ -467,13 +541,7 @@ int gx_read_vertices(const uint8_t *data, int format, int count, Vertex *out) {
   // A display list's draw kept for reuse records which indexes it read, which only the general decoder does.
   if (!plan->ready || spans.on) return read_vertices_general(data, format, count, out);
   const Format *f = format_for(format);
-  if (f->normal_components == ALL_NORMAL_VALUES && f->normal != KIND_NONE && (f->texture[VERTEX_NORMALS_UV] || f->texture[VERTEX_NORMALS_UV + 1] || f->texture[VERTEX_NORMALS_UV + 2])) {
-    debug_unsupported("vtx.normal_nbt_9_values", "texture coordinates 5 to 7 beside binormal and tangent", (uint32_t)format);
-  }
-  for (int a = 0; a < ARRAYS; a++) array_base[a] = gx.cp[CP_ARRAY_BASE + a], array_stride[a] = gx.cp[CP_ARRAY_STRIDE + a] & 0xff;
-  Vertex start;
-  vertex_start(f, &start);
-  return read_vertices_planned(plan, data, count, out, &start, f);
+  return read_vertices_planned(plan, prepare(format, plan, f), data, count, out, f);
 }
 
 // Display lists: models are drawn by calling the same lists frame after frame, and their
@@ -570,6 +638,12 @@ static void keep(KeptDraw *d, uint32_t offset, int format, int count, int kept, 
   memcpy(d->normals, gx_cached_normals, sizeof d->normals);
 }
 
+// Whether lists' draws are kept at all. When they aren't, a called list's memory needn't be watched.
+int gx_lists_kept(void) {
+  if (keeping < 0) keeping = watch_enabled() && getenv("WII_RECOMP_LIST_CACHE");
+  return keeping;
+}
+
 int gx_read_list_vertices(const uint8_t *data, int format, int count, Vertex *out) {
   format &= 7;
   // Off unless asked for: on the Pi, half a race's list draws miss, as characters' vertices
@@ -577,8 +651,7 @@ int gx_read_list_vertices(const uint8_t *data, int format, int count, Vertex *ou
   // more than decoding saves (a race frame's commands took 13.1 ms with it, 11.5 without).
   // Keeping the vertices on the graphics card instead, so a hit copies nothing, is what
   // would pay.
-  if (keeping < 0) keeping = watch_enabled() && getenv("WII_RECOMP_LIST_CACHE");
-  if (!keeping) return gx_read_vertices(data, format, count, out);
+  if (!gx_lists_kept()) return gx_read_vertices(data, format, count, out);
   uint32_t offset = (uint32_t)(data - gx_called_list.start);
   KeptDraw *d = kept_slot(offset);
   if (d->vertices && d->offset == offset && still_holds(d, format, count)) {

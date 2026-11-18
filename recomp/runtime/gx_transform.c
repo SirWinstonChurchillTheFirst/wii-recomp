@@ -193,27 +193,27 @@ int gx_transform_point(const Vertex *vertex, float point[3]) {
 
 // The depth of each vertex from 0 to 1 before the viewport's depth range, as the
 // shaders' GX_DEPTH gives it on either backend. Says no if a vertex is behind the camera.
+// The projection takes depth and w from the view's z alone (read_projection), so only that
+// row of each vertex's matrix is worked out: the sums are the ones the whole product gave,
+// less the terms that were zero. Asked for every draw with fog, which in a scene of
+// thousands of small draws is every few vertices.
 int gx_transform_depths(const Vertex *vertices, int count, float *low, float *high) {
   float rows[4][4] = {{0}};
   read_projection(rows);
   const float *matrices = (const float *)&gx.xf[XF_MATRICES];
-  *low = 1e9f;
-  *high = -1e9f;
+  const float z_scale = rows[2][2], z_add = rows[2][3], w_scale = rows[3][2], w_add = rows[3][3];
+  float least = 1e9f, most = -1e9f;
   for (int i = 0; i < count; i++) {
-    const float *p = vertices[i].position, *m = &matrices[vertices[i].matrix[VERTEX_MATRIX_POSITION] * WORDS_PER_ROW];
-    float view[4];
-    for (int row = 0; row < 3; row++) view[row] = m[row * 4] * p[0] + m[row * 4 + 1] * p[1] + m[row * 4 + 2] * p[2] + m[row * 4 + 3];
-    view[3] = 1;
-    float z = 0, w = 0;
-    for (int column = 0; column < 4; column++) {
-      z += rows[2][column] * view[column];
-      w += rows[3][column] * view[column];
-    }
+    const float *p = vertices[i].position, *m = &matrices[vertices[i].matrix[VERTEX_MATRIX_POSITION] * WORDS_PER_ROW + 8];
+    float view_z = m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3];
+    float z = z_scale * view_z + z_add, w = w_scale * view_z + w_add;
     if (!(w > 1e-5f)) return 0;
     float depth = z / w + 1;
-    if (depth < *low) *low = depth;
-    if (depth > *high) *high = depth;
+    if (depth < least) least = depth;
+    if (depth > most) most = depth;
   }
+  *low = least;
+  *high = most;
   return count > 0;
 }
 

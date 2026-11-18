@@ -23,3 +23,4 @@ void window_size(int *width, int *height) { *width = *height = 0; }
 // The player has no title, so it keeps no shader recipes.
 void gx_recipe_note(GxShader shader, const GxRenderState *state) { (void)shader; (void)state; }
 void gx_recipes_start(void) {}
+double vi_field_rate(void) { return 60.0; }  // No screen's timing: recordings are played as fast as they go.

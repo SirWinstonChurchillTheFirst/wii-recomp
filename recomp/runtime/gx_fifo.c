@@ -165,9 +165,15 @@ static void setting_gaps(uint32_t reg, uint32_t data) {
 // waits on the commands thread until the screen's next field. Two further apart are let
 // through: a frame that takes about a field (Mario Sports Mix on a small machine) ends
 // now just before a field begins and now just after, and holding the second of those
-// made every tenth picture late. The wait also ends a field after the
-// last one began by the host's clock: the game's thread, which counts the fields, may be
-// waiting for this thread. WII_RECOMP_FRAMES_UNHELD=1 turns it off.
+// made every tenth picture late. But no more pictures than fields are let through over
+// time: each field allows one, a field that passed with none leaves its one for the next
+// (so the two of Mario Sports Mix pass), and a picture with none left waits for the next
+// field. Without that the same game, in a scene its frames take 11 to 15 ms, made 68
+// pictures a second for a screen that shows 60, and its models came out torn into long
+// triangles across the picture; held to the screen's count they are whole.
+// The wait also ends a field after the last one began by the host's clock: the game's
+// thread, which counts the fields, may be waiting for this thread.
+// WII_RECOMP_FRAMES_UNHELD=1 turns it off.
 static _Atomic unsigned fields_begun;
 static _Atomic uint64_t field_began;  // Host nanoseconds.
 static _Thread_local int on_commands_thread;
@@ -181,15 +187,21 @@ static uint64_t host_now(void) {
 }
 
 static void hold_for_field(uint32_t address) {
-  static unsigned last_field = ~0u;
+  enum { MOST_ALLOWED = 2 };
+  static unsigned last_field = ~0u, counted_field;
   static uint32_t last_address;
   static uint64_t last_time;
-  static int off = -1;
+  static int off = -1, allowed = MOST_ALLOWED;
   if (off < 0) off = getenv("WII_RECOMP_FRAMES_UNHELD") != 0;
   unsigned field = atomic_load(&fields_begun);
   double rate = vi_field_rate();
   uint64_t field_time = (uint64_t)(1e9 / (rate > 1 ? rate : 60.0)), now = host_now();
-  if (!off && on_commands_thread && field == last_field && address != last_address && now - last_time < field_time / 3) {
+  int new_picture = address != last_address;
+  allowed += (int)(field - counted_field);
+  if (allowed > MOST_ALLOWED) allowed = MOST_ALLOWED;
+  counted_field = field;
+  int close = field == last_field && now - last_time < field_time / 3;
+  if (!off && on_commands_thread && new_picture && (close || allowed <= 0)) {
     uint64_t give_up = atomic_load(&field_began) + field_time + 2000000u;
     TIMELINE_BEGIN("held for the field");
     while (atomic_load(&fields_begun) == field && host_now() < give_up) {
@@ -197,10 +209,16 @@ static void hold_for_field(uint32_t address) {
       idle_wait();
     }
     TIMELINE_END("held for the field");
-    field = atomic_load(&fields_begun);
+    unsigned after = atomic_load(&fields_begun);
+    allowed += (int)(after - counted_field);
+    if (allowed > MOST_ALLOWED) allowed = MOST_ALLOWED;
+    counted_field = field = after;
     now = host_now();
   }
-  if (address != last_address) last_time = now;
+  if (new_picture) {
+    last_time = now;
+    if (allowed > 0) allowed--;
+  }
   last_field = field;
   last_address = address;
 }
@@ -325,7 +343,9 @@ static uint32_t parse_command(const uint8_t *p, uint32_t left) {
     uint8_t *list = host(address);
     if (list) {
       GxCalledList outer = gx_called_list;
-      gx_called_list = (GxCalledList){address, list_bytes, watch_range(address, list_bytes), list};
+      // Watched only for keeping its draws (gx_read_list_vertices): watching takes a lock for each call,
+      // and a list the game rewrites every frame would stop its thread at the first write each time.
+      gx_called_list = (GxCalledList){address, list_bytes, gx_lists_kept() ? watch_range(address, list_bytes) : WATCH_NONE, list};
       gx_record_list_enter();
       gx_parse(list, list_bytes);
       gx_record_list_leave();
@@ -361,7 +381,7 @@ static uint32_t parse_command(const uint8_t *p, uint32_t left) {
 // after the command that showed one.
 static uint32_t parse_one(const uint8_t *p, uint32_t left) {
   uint32_t used = parse_command(p, left);
-  if (used) gx_record_command(p, used);
+  if (used && gx_recording) gx_record_command(p, used);
   if (frame_shown) {
     frame_shown = 0;
     gx_record_frame_shown();

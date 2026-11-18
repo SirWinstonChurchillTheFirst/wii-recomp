@@ -69,6 +69,10 @@ typedef struct {
   size_t offset;
 } GxAttribute;
 
+// Set by gx_draw for the draw it is about to hand over: nothing but vertices went to the
+// backend since the draw before, so whatever that one set still holds.
+extern int gx_draw_unchanged;
+
 typedef struct {
   const char *name;
 

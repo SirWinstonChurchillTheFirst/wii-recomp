@@ -132,8 +132,11 @@ enum { YIELD_BYTES = 48 };
 static uintptr_t yield_start = 1;  // The C library's sched_yield.
 static int samples_all;  // Every frame's samples are counted too (see count_all).
 
+volatile int stage_samples_paused;
+
 static void take_sample(int signal_number, siginfo_t *info, void *context) {
   (void)signal_number, (void)info;
+  if (stage_samples_paused) return;
   ucontext_t *thread = context;
   unsigned at = atomic_fetch_add_explicit(&samples_taken, 1, memory_order_relaxed);
   if (at >= MOST_SAMPLES) return;
@@ -142,6 +145,14 @@ static void take_sample(int signal_number, siginfo_t *info, void *context) {
   // Inside the C library's sched_yield, which keeps nothing on the stack, the place it was
   // called from says more: that is what the thread is spinning on.
   if (samples[at] - yield_start < YIELD_BYTES) samples[at] = *(const uintptr_t *)thread->uc_mcontext.gregs[REG_RSP];
+  // With the graphics thread sampled, the same goes for any place outside the console's own code
+  // whose caller is on top of the stack: the C library's copying and comparing keep nothing
+  // there either, and "memcpy" alone doesn't say whose copying it is.
+  extern char __executable_start, etext;
+  if (samples_all == 2 && (samples[at] < (uintptr_t)&__executable_start || samples[at] >= (uintptr_t)&etext)) {
+    uintptr_t caller = *(const uintptr_t *)thread->uc_mcontext.gregs[REG_RSP];
+    if (caller >= (uintptr_t)&__executable_start && caller < (uintptr_t)&etext) samples[at] = caller;
+  }
 #else
   samples[at] = (uintptr_t)thread->uc_mcontext.pc;
 #endif
@@ -157,7 +168,7 @@ static void take_sample(int signal_number, siginfo_t *info, void *context) {
 void stage_sample_thread(int graphics) {
   const char *asked = getenv("WII_RECOMP_SLOW_SAMPLES");
   if (!asked || graphics != !strcmp(asked, "graphics")) return;
-  samples_all = graphics || !strcmp(asked, "all");
+  samples_all = graphics ? 2 : !strcmp(asked, "all");
   yield_start = (uintptr_t)sched_yield;
   struct sigaction action = {0};
   action.sa_sigaction = take_sample;
@@ -206,7 +217,7 @@ static void print_places(unsigned first, unsigned last) {
 // WII_RECOMP_SLOW_SAMPLES=all also counts every frame's samples by place, and every ten
 // seconds of frames prints the places most of them fell in: where the time of an ordinary
 // frame goes.
-enum { TABLE_PLACES = 1 << 15, ALL_SHOWN = 60, ALL_EVERY_FRAMES = 600 };
+enum { TABLE_PLACES = 1 << 15, ALL_SHOWN = 240, ALL_EVERY_FRAMES = 600 };
 static struct { uintptr_t place; unsigned count; } table[TABLE_PLACES];
 static void count_all(unsigned kept) {
   static unsigned frames, total, lost;
@@ -263,6 +274,7 @@ static void samples_frame(int slow) {
   fprintf(stderr, "\n");
 }
 #else
+volatile int stage_samples_paused;
 void stage_sample_thread(int graphics) { (void)graphics; }
 static void samples_frame(int slow) { (void)slow; }
 #endif

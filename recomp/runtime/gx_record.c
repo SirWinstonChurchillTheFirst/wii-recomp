@@ -32,7 +32,9 @@ typedef struct { size_t fifo_at, fifo_bytes; size_t first_update; uint32_t updat
 
 static _Atomic int requested;  // Frames asked for, taken by the chip's side at a frame's end.
 static char requested_path[4096], path[4096];
-static int frames_wanted, frames_done, recording;
+static int frames_wanted, frames_done;
+int gx_recording;  // Read by the parser for every command, so it needn't call in here to learn there is nothing to do.
+#define recording gx_recording
 static Bytes fifo, data;
 static Update *updates;
 static size_t update_count, update_room;

@@ -347,6 +347,7 @@ Vertex *gx_reserved;
 int gx_vertex_format;
 TevKey gx_last_tev;
 unsigned gx_used_maps;
+int gx_draw_unchanged;
 int gx_bounds_known;
 float gx_bounds[4];
 enum { BOUNDED_VERTICES = 128 };
@@ -391,44 +392,54 @@ void gx_draw(int primitive, int count) {
   // matrices and vertices between them. So the color stages, the transform's shape, the
   // shader, blending, viewport and scissor are kept, and the backend still holds what they
   // set. Fog that a draw's depths prove adds nothing is still decided for each draw.
-  static struct { int valid, format, expanding; unsigned written, maps; TevKey tev; VertexKey vertex; uint8_t fog_none; } last;
+  static struct { int valid, format, expanding; unsigned written, maps, frame, xf[XF_PARTS]; TevKey tev; VertexKey vertex; } last;
   static int reuse_off = -1;
   if (reuse_off < 0) reuse_off = getenv("WII_RECOMP_NO_DRAW_REUSE") != 0;
-  int same = last.valid && !reuse_off && last.written == gx_settings_written && last.format == gx_vertex_format && last.expanding == gx_expanding;
-  TevKey tev;
-  VertexKey vertex;
-  unsigned maps;
-  if (same) {
-    tev = last.tev, vertex = last.vertex, maps = last.maps;
-  } else {
-    maps = gx_tev_apply(&tev);
-    gx_transform_read(&tev, &vertex);  // Which reads nothing fog decides.
+  // A new frame looks each texture over again (bind_texture), so nothing is kept across one.
+  int same = last.valid && !reuse_off && last.written == gx_settings_written && last.format == gx_vertex_format && last.expanding == gx_expanding
+             && last.frame == frames;
+  uint8_t fog_none_before = last.tev.fog_none;
+  if (!same) {
+    last.maps = gx_tev_apply(&last.tev);
+    gx_transform_read(&last.tev, &last.vertex);  // Which reads nothing fog decides.
   }
   static int keep_fog = -1;
   if (keep_fog < 0) keep_fog = getenv("WII_RECOMP_KEEP_FOG") != 0;
-  tev.fog_none = 0;
-  if (tev.fog_type && !tev.depth_mode && !tev.fog_range && !keep_fog) tev.fog_none = (uint8_t)fog_adds_nothing(count);
-  gx_transform_apply(&vertex);
-  if (!same || tev.fog_none != last.fog_none) gx_shader_use(&tev, &vertex);
-  gx_last_tev = tev;
-  gx_used_maps = maps;
-  for (int map = 0; map < MAX_TEXTURE_MAPS; map++) {
-    if (maps & (1u << map)) bind_texture(map);
+  last.tev.fog_none = 0;
+  if (last.tev.fog_type && !last.tev.depth_mode && !last.tev.fog_range && !keep_fog) last.tev.fog_none = (uint8_t)fog_adds_nothing(count);
+  int same_shader = same && last.tev.fog_none == fog_none_before;
+  // The matrices and lights are XF memory, which a model's lists write between draws with
+  // no setting written. The draw's own values hold the last vertex's normals where the
+  // format has none, and those change with every draw. With neither, what was sent holds.
+  const VertexKey *vertex = &last.vertex;
+  int same_values = same && !memcmp(last.xf, gx_xf_written, sizeof last.xf) && !(vertex->has_normal && !vertex->normals_present) && !vertex->embossed
+                    && !vertex->expanded;
+  if (!same_values) gx_transform_apply(vertex);
+  if (!same_shader) {
+    gx_shader_use(&last.tev, vertex);
+    gx_last_tev = last.tev;
   }
+  gx_used_maps = last.maps;
   if (!same) {
+    // Textures stay bound until a setting is written: a copy made, a texture's registers
+    // and work handed in between two draws all count as one (gx_settings_written).
+    for (int map = 0; map < MAX_TEXTURE_MAPS; map++) {
+      if (last.maps & (1u << map)) bind_texture(map);
+    }
     apply_blending();
     apply_viewport();
     apply_scissor();
+    last.written = gx_settings_written, last.format = gx_vertex_format, last.expanding = gx_expanding, last.frame = frames, last.valid = 1;
   }
-  if (!same) {
-    last.tev = tev, last.vertex = vertex, last.maps = maps;
-    last.written = gx_settings_written, last.format = gx_vertex_format, last.expanding = gx_expanding, last.valid = 1;
-  }
-  last.fog_none = tev.fog_none;
+  memcpy(last.xf, gx_xf_written, sizeof last.xf);
+  // Nothing was handed to the backend since its last draw but vertices: it may go on as it was.
+  gx_draw_unchanged = same && same_shader && same_values;
   if (gx_frozen_plane_wanted && !((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1)) note_depth_plane(primitive, count);
-  if (gx_inspect_draw(&tev, maps, gx_vertex_format, primitive, count, gx_reserved)) {
+  if (gx_inspect_draw(&last.tev, last.maps, gx_vertex_format, primitive, count, gx_reserved)) {
     gx_backend->vertices_send(gx_reserved, count);
     gx_backend->draw(primitive, count);
+  } else {
+    last.valid = 0;  // The backend's last draw isn't the one before the next.
   }
 }
 

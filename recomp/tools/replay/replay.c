@@ -5,11 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <zlib.h>
 
 #include "cpu.h"
+#include "debug.h"
 #include "dff.h"
 #include "gx_backend.h"
 #include "gx_vulkan.h"
@@ -99,6 +101,7 @@ static void load_registers(const Dff *dff) {
     if (bp_is_state(reg)) write_bp(reg, dff->bp[reg]);
   }
   memcpy(gx.cp, dff->cp, sizeof gx.cp);
+  gx_cp_written++, gx_settings_written++;  // What was worked out from the registers is out of date.
   memcpy(gx.xf, dff->xf, sizeof dff->xf);
   memcpy(&gx.xf[XF_REGISTERS_START], dff->xf_registers, sizeof dff->xf_registers);
   gx_xf_note(0, XF_SIZE);
@@ -121,6 +124,7 @@ static double memory_ms;  // Time spent putting recorded memory in, which isn't 
 
 static void write_memory(const DffUpdate *update) {
   double began = now_ms();
+  stage_samples_paused = 1;
   uint32_t physical = update->address & PHYSICAL_MASK;
   uint8_t *base = mem1;
   uint64_t size = MEM1_SIZE;
@@ -134,6 +138,7 @@ static void write_memory(const DffUpdate *update) {
     exit(EXIT_STOP);
   }
   memcpy(base + physical, update->data, update->bytes);
+  stage_samples_paused = 0;
   memory_ms += now_ms() - began;
 }
 
@@ -275,12 +280,14 @@ int main(int argc, char **argv) {
   double slowest = 0, total = 0, working = 0;
   uint32_t timed = 0;
   vk_picture_sink = 0;
+  stage_sample_thread(1);  // WII_RECOMP_SLOW_SAMPLES=graphics: where the timed frames' time goes (debug.h).
   for (uint32_t turn = 1; turn < repeats; turn++) {
     load_registers(dff);
     for (uint32_t i = 0; i < frames; i++) {
       double began = now_ms(), began_working = clock_ms(CLOCK_THREAD_CPUTIME_ID), memory_before = memory_ms;
       play_frame(&dff->frames[i]);
       double took = now_ms() - began - (memory_ms - memory_before);
+      stage_frame(0);
       if (i == 0) continue;
       total += took, timed++;
       working += clock_ms(CLOCK_THREAD_CPUTIME_ID) - began_working - (memory_ms - memory_before);
@@ -288,6 +295,12 @@ int main(int argc, char **argv) {
     }
   }
   // Working time leaves out waiting for the graphics chip.
+  {
+    struct rusage used;
+    getrusage(RUSAGE_SELF, &used);
+    fprintf(stderr, "whole run: %.2f s in the program, %.2f s in the kernel, %ld small page faults\n", used.ru_utime.tv_sec + used.ru_utime.tv_usec / 1e6,
+            used.ru_stime.tv_sec + used.ru_stime.tv_usec / 1e6, used.ru_minflt);
+  }
   if (timed) {
     printf("timed %u frames: %.2f ms each on average, %.2f ms at most, %.2f ms of it working, first frames of each turn and putting memory in left out\n",
            timed, total / timed, slowest, working / timed);

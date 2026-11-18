@@ -16,6 +16,7 @@ void stage_shown(void);  // A picture reached the window, which can be later tha
 // WII_RECOMP_SLOW_SAMPLES=graphics samples the graphics thread instead, every frame counted,
 // for a game whose frames wait on that thread: the caller says which thread it is.
 void stage_sample_thread(int graphics);
+extern volatile int stage_samples_paused;  // Set around work that isn't the thread's own, which then isn't sampled.
 
 void debug_threads(void);
 extern volatile int debug_threads_now;  // Set by the control pipe's "threads": listed once, soon.
