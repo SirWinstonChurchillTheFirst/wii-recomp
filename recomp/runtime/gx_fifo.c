@@ -473,6 +473,7 @@ static void wake_idle(void) {}
 static void *commands_thread(void *unused) {
   (void)unused;
   on_commands_thread = 1;
+  stage_sample_thread(1);
 #ifdef __linux__
   prctl(PR_SET_TIMERSLACK, 1000);  // Short sleeps end when asked, not 50 microseconds later (the kernel's usual rounding).
 #endif

@@ -77,7 +77,7 @@ static void *run(void *unused) {
   // graphics; the kernel's usual rounding added half as much again to each.
   prctl(PR_SET_TIMERSLACK, 1000);
 #endif
-  stage_sample_thread();
+  stage_sample_thread(0);
   fill_code_slots();
   uint32_t entry = load_program(&boot);
   set_up_low_memory(&boot);

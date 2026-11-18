@@ -339,8 +339,10 @@ static void read_depth(TevKey *key, TevValues *values, int last_map) {
   // numbers travel in values nothing else reads then: the depth bias, and the two after the
   // fog range's center. A depth texture on top of it isn't followed, and says so.
   if ((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1) {
+    gx_frozen_plane_wanted = 1;
     if (!gx_frozen_plane_known) {
-      gap_hit("pixel.z_freeze", Z_FREEZE_BIT);  // Turned on before any triangle was drawn: nothing to freeze to.
+      // The run's first frozen draws, until a triangle has been drawn with the plane being kept.
+      gap_hit("pixel.z_freeze", Z_FREEZE_BIT);
     } else {
       if (chosen != DEPTH_OFF && !tests_depth_early()) debug_unsupported("pixel.z_freeze", "frozen depth with a depth texture as well", chosen);
       key->depth_mode = DEPTH_FROZEN;

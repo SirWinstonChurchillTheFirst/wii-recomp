@@ -64,8 +64,11 @@ int gx_transform_point(const Vertex *vertex, float point[3]);
 // in pixels of the picture buffer as the card has it and depth as the buffer stores it;
 // it is worked out on the processor from each filled shape's last three vertices, as
 // Dolphin's VertexManagerBase::CalculateZSlope does (CREDITS.md).
+// The plane is only kept once a game has frozen depth, as working it out for every draw cost
+// a game that never does 2 % of its graphics thread (Mario & Sonic at the Olympic Winter
+// Games' Downhill). So the very first frozen draw of a run has none, and is named.
 extern float gx_frozen_plane[3];
-extern int gx_frozen_plane_known;
+extern int gx_frozen_plane_known, gx_frozen_plane_wanted;
 // Lines (1) or points (2) are being drawn as quads, each corner moved by this much over w.
 extern int gx_expanding;
 extern float gx_expand_size[2];

@@ -154,9 +154,10 @@ static void take_sample(int signal_number, siginfo_t *info, void *context) {
   }
 }
 
-void stage_sample_thread(void) {
-  if (!getenv("WII_RECOMP_SLOW_SAMPLES")) return;
-  samples_all = !strcmp(getenv("WII_RECOMP_SLOW_SAMPLES"), "all");
+void stage_sample_thread(int graphics) {
+  const char *asked = getenv("WII_RECOMP_SLOW_SAMPLES");
+  if (!asked || graphics != !strcmp(asked, "graphics")) return;
+  samples_all = graphics || !strcmp(asked, "all");
   yield_start = (uintptr_t)sched_yield;
   struct sigaction action = {0};
   action.sa_sigaction = take_sample;
@@ -262,7 +263,7 @@ static void samples_frame(int slow) {
   fprintf(stderr, "\n");
 }
 #else
-void stage_sample_thread(void) {}
+void stage_sample_thread(int graphics) { (void)graphics; }
 static void samples_frame(int slow) { (void)slow; }
 #endif
 

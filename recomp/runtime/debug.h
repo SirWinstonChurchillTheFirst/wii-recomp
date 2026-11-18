@@ -13,7 +13,9 @@ void stage_shown(void);  // A picture reached the window, which can be later tha
 // Called once on the game's thread. With WII_RECOMP_SLOW_SAMPLES set (Linux), that thread is
 // sampled ten thousand times a second, and each slow frame's line is followed by where the
 // samples fell, as "<file>+<offset>" with a count, most first: what the frame's time went on.
-void stage_sample_thread(void);
+// WII_RECOMP_SLOW_SAMPLES=graphics samples the graphics thread instead, every frame counted,
+// for a game whose frames wait on that thread: the caller says which thread it is.
+void stage_sample_thread(int graphics);
 
 void debug_threads(void);
 extern volatile int debug_threads_now;  // Set by the control pipe's "threads": listed once, soon.

@@ -283,7 +283,7 @@ static int fog_adds_nothing(int count) {
 // shape, on the picture buffer as the card has it. Left as it was when a vertex is behind
 // the camera or the three lie on one line, as Dolphin leaves it.
 float gx_frozen_plane[3];
-int gx_frozen_plane_known;
+int gx_frozen_plane_known, gx_frozen_plane_wanted;
 static void note_depth_plane(int primitive, int count) {
   if (primitive > PRIM_FAN || count < 3) return;
   float half_width = xf_float(XF_VIEWPORT), half_height = -xf_float(XF_VIEWPORT + 1);
@@ -425,7 +425,7 @@ void gx_draw(int primitive, int count) {
     last.written = gx_settings_written, last.format = gx_vertex_format, last.expanding = gx_expanding, last.valid = 1;
   }
   last.fog_none = tev.fog_none;
-  if (!((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1)) note_depth_plane(primitive, count);
+  if (gx_frozen_plane_wanted && !((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1)) note_depth_plane(primitive, count);
   if (gx_inspect_draw(&tev, maps, gx_vertex_format, primitive, count, gx_reserved)) {
     gx_backend->vertices_send(gx_reserved, count);
     gx_backend->draw(primitive, count);
