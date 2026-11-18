@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "debug.h"
 #include "gaps.h"
 #include "gx_backend.h"
 #include "gx_encode.h"
@@ -120,6 +121,7 @@ int gx_efb_read(uint32_t address, int bytes, uint32_t *value) {
   if (!found) return 0;
   *value = 0;
   if (found < 0 || !gx_draw_started()) return 1;
+  stage_note(NOTE_PEEK);
   gx_run_on_graphics(peek_work, &access);
   // A narrower read takes the word's low bytes, as Dolphin's hardware reads do.
   *value = bytes == 4 ? access.value : bytes == 2 ? access.value & 0xffff : access.value & 0xff;
@@ -137,6 +139,7 @@ void gx_efb_send_pokes(void) {
   if (!gx_efb_pokes_waiting) return;
   gx_efb_pokes_waiting = 0;
   Access sending = run;
+  stage_note(NOTE_POKE);
   gx_run_on_graphics(poke_work, &sending);
 }
 
@@ -204,6 +207,7 @@ static void box_work(void *argument) {
 
 int gx_bounding_box_read(uint32_t address, uint32_t *value) {
   if (address < PE_BOX_FIRST || address >= PE_BOX_END) return 0;
+  stage_note(NOTE_BOX);
   gx_run_on_graphics(box_work, 0);
   *value = (uint32_t)box[(address - PE_BOX_FIRST) / 2] & 0xffff;
   return 1;

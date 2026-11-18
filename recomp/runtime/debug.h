@@ -2,10 +2,18 @@
 #include <stdint.h>
 
 // Time spent per frame, reported for slow frames when WII_RECOMP_ACTIVITY is set.
-enum { STAGE_STREAM, STAGE_PRESENT, STAGE_DISC, STAGE_AUDIO, STAGE_IDLE, STAGE_COUNT };
+enum { STAGE_STREAM, STAGE_PRESENT, STAGE_DISC, STAGE_AUDIO, STAGE_IDLE, STAGE_HANDED, STAGE_COUNT };
+// STAGE_HANDED is the game's thread waiting for the graphics thread to do something for it at
+// once: read a pixel, the bounding box or a held picture copy. Each such wait is noted by kind.
+enum { NOTE_PEEK, NOTE_POKE, NOTE_BOX, NOTE_TOUCH, NOTE_COUNT };
+void stage_note(int kind);
 void stage_add(int stage, uint64_t ticks);
 void stage_frame(float gap_ms);
 void stage_shown(void);  // A picture reached the window, which can be later than the frame that made it.
+// Called once on the game's thread. With WII_RECOMP_SLOW_SAMPLES set (Linux), that thread is
+// sampled ten thousand times a second, and each slow frame's line is followed by where the
+// samples fell, as "<file>+<offset>" with a count, most first: what the frame's time went on.
+void stage_sample_thread(void);
 
 void debug_threads(void);
 extern volatile int debug_threads_now;  // Set by the control pipe's "threads": listed once, soon.

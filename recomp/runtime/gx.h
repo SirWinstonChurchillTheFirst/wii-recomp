@@ -55,6 +55,17 @@ int gx_transform_depths(const Vertex *vertices, int count, float *low, float *hi
 int gx_fog_none_between(double low, double high);
 // Where a vertex lands, over w as in gl_Position, and whether it is in front of the camera.
 int gx_transform_screen(const Vertex *vertex, float *x, float *y);
+// The same, with the vertex's depth from 0 to 1 before the viewport's depth range, as point[2].
+int gx_transform_point(const Vertex *vertex, float point[3]);
+// Z-freeze (GEN_MODE bit 19): while it is on, every pixel takes its depth from the plane of
+// the last triangle drawn before it was turned on, not from its own triangle. Games lay a
+// shadow or a mark flat on the ground that way, so it neither sinks into the ground nor
+// flickers against it. The plane is kept as depth = [2] + [0] * x + [1] * y, with x and y
+// in pixels of the picture buffer as the card has it and depth as the buffer stores it;
+// it is worked out on the processor from each filled shape's last three vertices, as
+// Dolphin's VertexManagerBase::CalculateZSlope does (CREDITS.md).
+extern float gx_frozen_plane[3];
+extern int gx_frozen_plane_known;
 // Lines (1) or points (2) are being drawn as quads, each corner moved by this much over w.
 extern int gx_expanding;
 extern float gx_expand_size[2];

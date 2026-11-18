@@ -1670,7 +1670,9 @@ static void show_now(uint64_t when) {
   held_show.waiting = 0;
   VkPresentInfoKHR info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &vk.swap_done[held_show.image],
                            .swapchainCount = 1, .pSwapchains = &vk.swapchain, .pImageIndices = &held_show.image};
+  TIMELINE_BEGIN("to the display");
   VkResult presented = vkQueuePresentKHR(vk.queue, &info);
+  TIMELINE_END("to the display");
   shown_outdated |= presented == VK_SUBOPTIMAL_KHR || presented == VK_ERROR_OUT_OF_DATE_KHR;
   last_shown = when ? when : host_nanoseconds();
   stage_shown();
@@ -1726,7 +1728,9 @@ static void present(const GxRectangle *from) {
     mark("to window", 0, 0);
     goto shown;
   }
+  TIMELINE_BEGIN("window picture");
   VkResult acquired = vk.swapchain && !unshown ? vkAcquireNextImageKHR(vk.device, vk.swapchain, ACQUIRE_TIMEOUT_NS, frame->image_ready, VK_NULL_HANDLE, &image_index) : VK_NOT_READY;
+  TIMELINE_END("window picture");
   int showing = acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR;
   outdated = acquired == VK_SUBOPTIMAL_KHR || acquired == VK_ERROR_OUT_OF_DATE_KHR;
   if (showing) {
@@ -1744,7 +1748,9 @@ shown:
   mark_report();
   if (vk_picture_sink) hand_picture_over(frame);
   if (vk.swapchain) {
+    TIMELINE_BEGIN("window size");
     window_refresh_size();
+    TIMELINE_END("window size");
     // Not under a held picture: the next one sees to it.
     if (!held_show.waiting && (outdated || !vk_swapchain_matches_window())) vk_create_swapchain();
   }

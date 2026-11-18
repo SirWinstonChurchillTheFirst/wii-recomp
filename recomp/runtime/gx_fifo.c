@@ -10,6 +10,11 @@
 #include <sched.h>
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
+#ifdef __linux__
+#include <linux/futex.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
 #elif defined(_WIN32)
 #include <windows.h>
@@ -142,7 +147,6 @@ static void copy_gaps(uint32_t control) {
 static void setting_gaps(uint32_t reg, uint32_t data) {
   if (reg == BP_GEN_MODE) {
     if ((data >> MULTISAMPLE_BIT) & 1) gap_hit("pixel.multisample_and_aa_modes", MULTISAMPLE_BIT);
-    if ((data >> Z_FREEZE_BIT) & 1) gap_hit("pixel.z_freeze", Z_FREEZE_BIT);
   } else if (reg == BP_PIXEL_FORMAT) {
     uint32_t format = data & PIXEL_FORMAT_MASK;
     if (format == PIXEL_FORMAT_RGB565_Z16) gap_hit("pixel.z16_precision_formats", (data >> DEPTH_FORMAT_SHIFT) & 7);
@@ -267,7 +271,11 @@ static void write_bp(uint32_t value) {
       frame_shown = 1;
     }
     else gx_copy_to_texture(data, (gx.bp[BP_PIXEL_FORMAT] & PIXEL_FORMAT_MASK) == PIXEL_FORMAT_DEPTH);
-    if (data & (1u << COPY_CLEAR_BIT)) gx_clear();
+    if (data & (1u << COPY_CLEAR_BIT)) {
+      TIMELINE_BEGIN("clear");
+      gx_clear();
+      TIMELINE_END("clear");
+    }
   }
 }
 
@@ -407,7 +415,9 @@ static void run_handed(int between) {
   // Work handed in between two draws may leave the backend's draw state (a held copy read
   // back when the game touches its page ends the pass): the next draw sets it all again.
   gx_settings_written++;
+  TIMELINE_BEGIN("handed work");
   handed.work(handed.argument);
+  TIMELINE_END("handed work");
   atomic_store_explicit(&handed_waiting, 0, memory_order_relaxed);
   atomic_store_explicit(&handed_done, 1, memory_order_release);
 }
@@ -433,6 +443,28 @@ static void idle_wait(void) {
   WaitForMultipleObjects(2, either, FALSE, INFINITE);
 }
 static void wake_idle(void) { if (idle_wake) SetEvent(idle_wake); }
+#elif defined(__linux__)
+// On Linux a sleep that short comes due 50 to 100 microseconds late as well (the kernel
+// rounds a thread's timers together), and New Super Mario Bros. Wii touches some 25 held
+// copies a picture: its thread waited a quarter of a millisecond for each, 2.6 ms of every
+// frame, which left too little room for a frame with more to do, and one was missed every
+// ten seconds or so. So here too the wait ends at once when work is handed over: the
+// thread sleeps on a word the hander sets and wakes it by (a futex).
+// Commands written to the ring wake it the same way, but only when it is asleep, as the
+// game writes them a few bytes at a time and waking costs a call to the kernel.
+static _Atomic int idle_word, idle_asleep;
+static void idle_wait(void) {
+  struct timespec pause = {0, EMPTY_SLEEP_NANOSECONDS};
+  atomic_store_explicit(&idle_asleep, 1, memory_order_seq_cst);
+  if (!atomic_exchange_explicit(&idle_word, 0, memory_order_seq_cst)) syscall(SYS_futex, &idle_word, FUTEX_WAIT_PRIVATE, 0, &pause, 0, 0);
+  atomic_store_explicit(&idle_asleep, 0, memory_order_seq_cst);
+  atomic_store_explicit(&idle_word, 0, memory_order_release);
+}
+static void wake_idle(void) {
+  atomic_store_explicit(&idle_word, 1, memory_order_seq_cst);
+  if (atomic_load_explicit(&idle_asleep, memory_order_seq_cst)) syscall(SYS_futex, &idle_word, FUTEX_WAKE_PRIVATE, 1, 0, 0, 0);
+}
+#define WAKES_FOR_COMMANDS 1
 #else
 static void idle_wait(void) { wait_briefly(); }
 static void wake_idle(void) {}
@@ -441,6 +473,9 @@ static void wake_idle(void) {}
 static void *commands_thread(void *unused) {
   (void)unused;
   on_commands_thread = 1;
+#ifdef __linux__
+  prctl(PR_SET_TIMERSLACK, 1000);  // Short sleeps end when asked, not 50 microseconds later (the kernel's usual rounding).
+#endif
   uint64_t parsed = 0;
   int empty_turns = 0;
   while (1) {
@@ -550,7 +585,9 @@ static void hand_over(void (*work)(void *), void *argument, int soon) {
   atomic_store_explicit(&handed_done, 0, memory_order_relaxed);
   atomic_store_explicit(&handed_waiting, 1, memory_order_release);
   wake_idle();
+  uint64_t waiting_since = time_base();
   while (!atomic_load_explicit(&handed_done, memory_order_acquire)) sched_yield();
+  stage_add(STAGE_HANDED, time_base() - waiting_since);
   atomic_flag_clear_explicit(&handing, memory_order_release);
 }
 
@@ -567,6 +604,9 @@ static void ring_add(const uint8_t *bytes, uint32_t count) {
   memcpy(ring + (written & (RING_BYTES - 1)), bytes, count);
   ring_added += count;
   atomic_store_explicit(&ring_written, written + count, memory_order_release);
+#ifdef WAKES_FOR_COMMANDS
+  wake_idle();
+#endif
 }
 #else
 static int start_commands_thread(void) { return 0; }

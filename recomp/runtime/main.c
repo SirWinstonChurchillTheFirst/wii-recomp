@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "audio.h"
 #include "dsp.h"
@@ -17,6 +20,7 @@
 #include "input.h"
 #include "pads.h"
 #include "cpu.h"
+#include "debug.h"
 #include "dispatch.h"
 #include "drive.h"
 #include "gx.h"
@@ -68,6 +72,12 @@ static void *run(void *unused) {
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);  // A frame can't wait for the system's other work.
 #endif
   (void)unused;
+#ifdef __linux__
+  // The game's thread sleeps a tenth of a millisecond at a time while it waits for the
+  // graphics; the kernel's usual rounding added half as much again to each.
+  prctl(PR_SET_TIMERSLACK, 1000);
+#endif
+  stage_sample_thread();
   fill_code_slots();
   uint32_t entry = load_program(&boot);
   set_up_low_memory(&boot);

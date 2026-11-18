@@ -46,6 +46,9 @@ enum { MEMORY_NONE, MEMORY_HELD, MEMORY_WRITTEN };
 // A place stops being read back as each copy there is made once nothing has read one
 // for this many pictures.
 enum { MAX_OLDER = 256, LEARNED_FRAMES = 600 };
+// A copy's pages are opened as it's made once a touch beside it let them go this many copies
+// in a row, for this many copies, and only among its first pages (one bit each).
+enum { SHARED_STREAK = 8, SHARED_USES = 600, SHARED_PAGES = 64 };
 
 // One copy as it lies in memory. A place's current copy is what textures there draw; an
 // older one still held, that a later copy only partly covers, keeps its own texture until
@@ -68,6 +71,12 @@ typedef struct {
   // a byte the game has written there since isn't written over when the copy lands.
   uint8_t *before, *before_taken;
   size_t before_size;
+  // A place whose copy shares its first or last pages with data the game touches every
+  // picture (see open_shared_pages): which of the copy's pages a touch beside it let go
+  // (bit 0 is its first page), for how many copies in a row, and how many copies have had
+  // those pages opened as they were made since the place was last looked at afresh.
+  uint64_t touched_beside;
+  unsigned shared_streak, shared_uses;
 } Copy;
 
 static Copy copies[MAX_COPIES], older[MAX_OLDER];
@@ -436,13 +445,47 @@ static void touched_work(void *argument) {
   // The page is let go first, so what the others hold on it can be noted.
   watch_release(page | 0x80000000u, page_bytes);
   EACH_HELD(copy) {
-    if (overlaps(copy, page, page + page_bytes)) expose(copy, "by a touch at", at);
+    if (!overlaps(copy, page, page + page_bytes)) continue;
+    expose(copy, "by a touch at", at);
+    uint32_t index = (page - (copy_start(copy) & ~(page_bytes - 1))) / page_bytes;
+    if (!copy->older && page >= (copy_start(copy) & ~(page_bytes - 1)) && index < SHARED_PAGES) copy->touched_beside |= 1ull << index;
+  }
+  settle_pages();
+}
+
+// New Super Mario Bros. Wii makes twenty small copies every picture, each in a buffer that
+// starts with data the game touches every picture too. Each of those touches was a fault,
+// a trip to this thread with the game's thread waiting, and a page let go: 2 ms of every
+// frame on a small machine, and with them a frame that had more to do than most no longer
+// fitted before the screen's next field. So a place where a touch beside the copy let the
+// same pages go for a few copies in a row has those pages let go as each new copy is made,
+// just as the touch would have: the copy's bytes there land with the next picture shown.
+// Every so often the place is held whole again for a few copies, to see the game still
+// touches it.
+static void open_shared_pages(Copy *copy) {
+  if (copy->shared_streak < SHARED_STREAK || !copy->touched_beside) return;
+  if (++copy->shared_uses > SHARED_USES) {
+    copy->shared_streak = copy->shared_uses = 0;
+    copy->touched_beside = 0;
+    return;
+  }
+  uint32_t page_bytes = page_size(), first = copy_start(copy) & ~(page_bytes - 1);
+  for (uint32_t index = 0; index < SHARED_PAGES; index++) {
+    uint32_t page = first + index * page_bytes;
+    if (!(copy->touched_beside & (1ull << index)) || page >= copy_end(copy)) continue;
+    watch_release(page | 0x80000000u, page_bytes);
+    EACH_HELD(other) {
+      if (overlaps(other, page, page + page_bytes)) expose(other, "as its page is touched every picture, at", page);
+    }
   }
   settle_pages();
 }
 
 // Only copies already made can be held, so the work needn't wait for the draws after them.
-static void touched(uint32_t physical) { gx_run_on_graphics_soon(touched_work, &physical); }
+static void touched(uint32_t physical) {
+  stage_note(NOTE_TOUCH);
+  gx_run_on_graphics_soon(touched_work, &physical);
+}
 
 void gx_copy_prepare_read(uint32_t address, uint32_t bytes) {
   uint32_t start = address & 0x3fffffffu, end = start + bytes;
@@ -669,6 +712,8 @@ void gx_copy_to_texture(uint32_t control, int from_depth) {
     copy = &copies[0];
     if (copy->memory == MEMORY_HELD) keep_apart(copy, shape.width, shape.height);
     copy->read_frame = 0;
+    copy->touched_beside = 0;
+    copy->shared_streak = copy->shared_uses = 0;
   }
   // Older copies this one lands on: one it covers whole is simply replaced. Any other still
   // held keeps its bytes outside this one, so it stays held, apart, until something reads
@@ -693,6 +738,13 @@ void gx_copy_to_texture(uint32_t control, int from_depth) {
     copy->address = address;  // Place 0 taken over when every place was in use.
     index_places();
   }
+  // The same pages touched beside the last copy here as beside the ones before it, or not.
+  int same_shape = copy->address == address && copy->format == shape.format && copy->width == shape.width && copy->height == shape.height
+                && copy->stride == shape.stride;
+  if (!same_shape || !copy->touched_beside) copy->shared_streak = copy->shared_uses = 0;
+  else if (copy->shared_streak < SHARED_STREAK) copy->shared_streak++;
+  uint64_t touched_before = same_shape ? copy->touched_beside : 0;
+  copy->touched_beside = 0;
   copy->format = shape.format, copy->width = shape.width, copy->height = shape.height;
   copy->stride = shape.stride, copy->rows = shape.rows, copy->row_bytes = shape.row_bytes;
   copy->encoding = encoding_for(control, from_depth, copy_width, copy_height, stride);
@@ -719,8 +771,15 @@ void gx_copy_to_texture(uint32_t control, int from_depth) {
   }
   copy->memory = MEMORY_HELD;
   counts.held++;
-  if (!watch_hold(start, end - start)) write_back(copy, "as memory can't be held");
-  else if (learned(copy)) copy->ticket = read_copy(copy);
+  if (!watch_hold(start, end - start)) {
+    write_back(copy, "as memory can't be held");
+    return;
+  }
+  if (learned(copy)) copy->ticket = read_copy(copy);
+  if (copy->shared_streak >= SHARED_STREAK) {
+    copy->touched_beside = touched_before;  // Nothing faults there now, so the last look stands.
+    open_shared_pages(copy);
+  }
 }
 
 static int memory_unchanged(Copy *copy) {

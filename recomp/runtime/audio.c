@@ -21,6 +21,8 @@
 // Blocks only move between the game's slow steps, such as waiting on the graphics
 // card, so they're made up right after. Past this, that time is let go.
 #define MAX_BLOCKS_BEHIND 1200u  // 300 ms.
+// How long the game may take to answer the DMA's interrupt before its time is let go.
+#define ANSWER_BLOCKS 160u  // 40 ms, inside what the output's ring holds.
 // Dolphin waits 200 processor cycles before the first interrupt of a new DMA: some
 // games crash if it comes sooner (DSP.cpp, AUDIO_DMA_CONTROL_LEN).
 #define START_INTERRUPT_TICKS 17u
@@ -182,7 +184,14 @@ void audio_update(uint64_t now) {
     dma_blocks_done = 0;
   }
   while (block_time(dma_blocks_done + 1) <= now) {
-    if (waiting_for_game()) {  // The clock goes on without it.
+    if (waiting_for_game()) {
+      // The game gets a little while to answer, and the blocks that fell due meanwhile are
+      // made up once it has: its thread can be held up for a few milliseconds (waiting for
+      // the graphics, a file, the host's scheduler) without having fallen behind, and
+      // letting that time go each time left New Super Mario Bros. Wii a tenth short of
+      // sound, heard as a fifth of a second of silence every two seconds. Only past that
+      // does the clock go on without it.
+      if (block_time(dma_blocks_done + 1 + ANSWER_BLOCKS) > now) break;
       dma_clock_start = now;
       dma_blocks_done = 0;
       break;

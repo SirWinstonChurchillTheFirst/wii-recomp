@@ -15,7 +15,7 @@
 #include "title.h"
 
 enum {
-  BP_GEN_MODE = 0x00, BP_SCISSOR_FIRST = 0x20, BP_SCISSOR_LAST = 0x21, BP_Z_MODE = 0x40, BP_BLEND = 0x41, BP_CONSTANT_ALPHA = 0x42,
+  BP_GEN_MODE = 0x00, Z_FREEZE_BIT = 19, BP_SCISSOR_FIRST = 0x20, BP_SCISSOR_LAST = 0x21, BP_Z_MODE = 0x40, BP_BLEND = 0x41, BP_CONSTANT_ALPHA = 0x42,
   CONSTANT_ALPHA_ENABLE_BIT = 8, BP_CLEAR_COLOR_AR = 0x4f, BP_CLEAR_COLOR_GB = 0x50, BP_CLEAR_DEPTH = 0x51, BP_SCISSOR_OFFSET = 0x59,
   BP_TEXTURE_MODE_LOW = 0x80, BP_TEXTURE_MODE_HIGH = 0xa0, BP_TEXTURE_LIMITS_LOW = 0x84, BP_TEXTURE_LIMITS_HIGH = 0xa4,
   BP_TEXTURE_CACHE_LOW = 0x8c, BP_TEXTURE_CACHE_HIGH = 0xac, CACHE_MANAGED_BIT = 21,
@@ -279,6 +279,34 @@ static int fog_adds_nothing(int count) {
   return gx_fog_none_between(a < b ? a : b, a < b ? b : a);
 }
 
+// The plane a frozen depth is read from (gx.h): through the last three vertices of a filled
+// shape, on the picture buffer as the card has it. Left as it was when a vertex is behind
+// the camera or the three lie on one line, as Dolphin leaves it.
+float gx_frozen_plane[3];
+int gx_frozen_plane_known;
+static void note_depth_plane(int primitive, int count) {
+  if (primitive > PRIM_FAN || count < 3) return;
+  float half_width = xf_float(XF_VIEWPORT), half_height = -xf_float(XF_VIEWPORT + 1);
+  float center_x = xf_float(XF_VIEWPORT + 3) - VIEWPORT_ORIGIN, center_y = xf_float(XF_VIEWPORT + 4) - VIEWPORT_ORIGIN;
+  float depth_near, depth_far, scale = (float)gx_scale_numerator / (float)gx_scale_denominator, at[3][3];
+  viewport_depth(&depth_near, &depth_far);
+  for (int i = 0; i < 3; i++) {
+    float point[3];
+    if (!gx_transform_point(&gx_reserved[count - 3 + i], point)) return;
+    at[i][0] = (center_x + point[0] * half_width) * scale;
+    at[i][1] = (center_y - point[1] * half_height) * scale;
+    at[i][2] = depth_near + (depth_far - depth_near) * point[2];
+  }
+  float dx31 = at[2][0] - at[0][0], dx12 = at[0][0] - at[1][0], dy12 = at[0][1] - at[1][1], dy31 = at[2][1] - at[0][1];
+  float depth31 = at[2][2] - at[0][2], depth21 = at[1][2] - at[0][2];
+  float a = depth31 * -dy12 - depth21 * dy31, b = dx31 * depth21 + dx12 * depth31, c = -dx12 * dy31 - dx31 * -dy12;
+  if (c == 0) return;
+  gx_frozen_plane[0] = -a / c;
+  gx_frozen_plane[1] = -b / c;
+  gx_frozen_plane[2] = at[0][2] - (at[0][0] * gx_frozen_plane[0] + at[0][1] * gx_frozen_plane[1]);
+  gx_frozen_plane_known = 1;
+}
+
 // The game's viewport is in pixels of its own frame.
 static void apply_viewport(void) {
   float half_width = xf_float(XF_VIEWPORT), half_height = -xf_float(XF_VIEWPORT + 1);
@@ -397,6 +425,7 @@ void gx_draw(int primitive, int count) {
     last.written = gx_settings_written, last.format = gx_vertex_format, last.expanding = gx_expanding, last.valid = 1;
   }
   last.fog_none = tev.fog_none;
+  if (!((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1)) note_depth_plane(primitive, count);
   if (gx_inspect_draw(&tev, maps, gx_vertex_format, primitive, count, gx_reserved)) {
     gx_backend->vertices_send(gx_reserved, count);
     gx_backend->draw(primitive, count);
