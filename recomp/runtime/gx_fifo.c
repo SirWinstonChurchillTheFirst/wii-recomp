@@ -91,7 +91,10 @@ static uint8_t stream[STREAM_BYTES];
 static uint32_t stream_used;
 static uint8_t burst[BURST_BYTES];
 static uint32_t burst_used;
-static uint32_t pe_enabled, pe_status, pe_token;
+static uint32_t pe_enabled;
+// The token's value and the signals' status are set by the game's thread, and with a
+// BP_TOKEN_NOW also by the commands thread, which reads the status to do it.
+static _Atomic uint32_t pe_status, pe_token;
 // The last token the chip came to. The game sees it (pe_token) when that token's interrupt
 // is raised, not when it's parsed: the chip here is through a frame's tokens in
 // microseconds, and a handler still on its way for an earlier one would read the frame's
