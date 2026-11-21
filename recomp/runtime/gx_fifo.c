@@ -29,7 +29,6 @@
 #include "gx_backend.h"
 #include "gaps.h"
 #include "hardware.h"
-#include "vi.h"
 #include "memory_watch.h"
 
 enum {
@@ -176,15 +175,13 @@ static void setting_gaps(uint32_t reg, uint32_t data) {
 // WII_RECOMP_FRAMES_UNHELD=1 turns it off.
 static _Atomic unsigned fields_begun;
 static _Atomic uint64_t field_began;  // Host nanoseconds.
+// Worked out by the video interface on the game's thread, as each field begins: the
+// commands thread can't ask vi.c, whose timing the game's thread rewrites when it
+// changes the video mode.
+static _Atomic uint64_t field_length = 1000000000ull / 60;
 static _Thread_local int on_commands_thread;
 static void run_handed(int between);
 static void idle_wait(void);
-
-static uint64_t host_now(void) {
-  struct timespec now;
-  clock_gettime(CLOCK_MONOTONIC, &now);
-  return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
 
 static void hold_for_field(uint32_t address) {
   enum { MOST_ALLOWED = 2 };
@@ -194,8 +191,7 @@ static void hold_for_field(uint32_t address) {
   static int off = -1, allowed = MOST_ALLOWED;
   if (off < 0) off = getenv("WII_RECOMP_FRAMES_UNHELD") != 0;
   unsigned field = atomic_load(&fields_begun);
-  double rate = vi_field_rate();
-  uint64_t field_time = (uint64_t)(1e9 / (rate > 1 ? rate : 60.0)), now = host_now();
+  uint64_t field_time = gx_field_nanoseconds(), now = host_nanoseconds();
   int new_picture = address != last_address;
   allowed += (int)(field - counted_field);
   if (allowed > MOST_ALLOWED) allowed = MOST_ALLOWED;
@@ -204,7 +200,7 @@ static void hold_for_field(uint32_t address) {
   if (!off && on_commands_thread && new_picture && (close || allowed <= 0)) {
     uint64_t give_up = atomic_load(&field_began) + field_time + 2000000u;
     TIMELINE_BEGIN("held for the field");
-    while (atomic_load(&fields_begun) == field && host_now() < give_up) {
+    while (atomic_load(&fields_begun) == field && host_nanoseconds() < give_up) {
       run_handed(1);
       // A picture held for its moment on the screen comes due during this wait as at any
       // other time: left until the wait was over, it was shown late and the next one right
@@ -217,7 +213,7 @@ static void hold_for_field(uint32_t address) {
     allowed += (int)(after - counted_field);
     if (allowed > MOST_ALLOWED) allowed = MOST_ALLOWED;
     counted_field = field = after;
-    now = host_now();
+    now = host_nanoseconds();
   }
   if (new_picture) {
     last_time = now;
@@ -834,8 +830,11 @@ uint64_t graphics_next_due(void) {
   return token ? token : finish;
 }
 
-void graphics_retrace(void) {
-  atomic_store(&field_began, host_now());
+uint64_t gx_field_nanoseconds(void) { return atomic_load(&field_length); }
+
+void graphics_retrace(double field_rate) {
+  if (field_rate > 1) atomic_store(&field_length, (uint64_t)(1e9 / field_rate));
+  atomic_store(&field_began, host_nanoseconds());
   atomic_fetch_add(&fields_begun, 1);
   if (resume_state == WAITING_FOR_RETRACE) resume_state = RESUME_DUE;
   if (held_at_token && ++retraces_held >= HOLD_RETRACES_AT_MOST) token_seen = 1;

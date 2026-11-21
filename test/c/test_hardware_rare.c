@@ -29,7 +29,7 @@ int ipc_write(uint32_t a, uint32_t v) { return 0; }
 int graphics_read(uint32_t a, uint32_t *v) { return 0; }
 int graphics_write(uint32_t a, uint32_t v, int n) { return 0; }
 void graphics_pipe_write(uint32_t v, int n) {}
-void graphics_retrace(void) {}
+void graphics_retrace(double field_rate) { (void)field_rate; }
 int vi_read(uint32_t a, uint32_t *v) { return 0; }
 void vi_timing_changed(void) {}
 int gx_efb_read(uint32_t a, int n, uint32_t *v) { return 0; }

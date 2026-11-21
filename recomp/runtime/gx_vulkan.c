@@ -13,7 +13,6 @@
 #include "gx_vulkan.h"
 #include "debug.h"
 #include "timeline.h"
-#include "vi.h"
 
 #define EFB_PIXEL_WIDTH (EFB_WIDTH * EFB_SCALE)
 #define EFB_PIXEL_HEIGHT (EFB_HEIGHT * EFB_SCALE)
@@ -1682,12 +1681,6 @@ static struct { int waiting; uint32_t image; uint64_t due; } held_show;
 static uint64_t last_shown;
 static int shown_outdated;
 
-static uint64_t host_nanoseconds(void) {
-  struct timespec now;
-  clock_gettime(CLOCK_MONOTONIC, &now);
-  return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
-
 static void show_now(uint64_t when) {
   if (!held_show.waiting) return;
   held_show.waiting = 0;
@@ -1709,8 +1702,7 @@ static void show_held(void) {
 static void show_or_hold(uint32_t image, int at_once) {
   static int off = -1;
   if (off < 0) off = getenv("WII_RECOMP_SHOW_AT_ONCE") != 0;
-  double rate = vi_field_rate();
-  uint64_t field = (uint64_t)(1e9 / (rate > 1 ? rate : 60.0)), now = host_nanoseconds();
+  uint64_t field = gx_field_nanoseconds(), now = host_nanoseconds();
   held_show.waiting = 1;
   held_show.image = image;
   held_show.due = last_shown + field;
@@ -1725,8 +1717,7 @@ static void present(const GxRectangle *from) {
     // of fields and are shown a field apart by this clock, and when the two were a few
     // milliseconds out of step every second or third picture was dropped as "too soon"
     // (Mario & Sonic at the Olympic Winter Games' menus: pictures 30 ms apart).
-    double rate = vi_field_rate();
-    uint64_t half_field = (uint64_t)(0.5e9 / (rate > 1 ? rate : 60.0));
+    uint64_t half_field = gx_field_nanoseconds() / 2;
     if (held_show.due > host_nanoseconds() + half_field) unshown = 1;
     else show_now(held_show.due);
   }

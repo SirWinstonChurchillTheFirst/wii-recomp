@@ -9,6 +9,7 @@
 static uint8_t registers[0x100];
 static uint64_t now;
 static int retraces, fired[4];
+static double retrace_rate;  // What the last retrace told the graphics.
 uint32_t hw_read(uint32_t a, int n) { return 0; }
 void hw_write(uint32_t a, uint32_t v, int n) {}
 uint32_t hw_peek(uint32_t address, int bytes) {
@@ -21,7 +22,7 @@ static void set(uint32_t address, uint32_t value, int bytes) {
   vi_timing_changed();
 }
 uint64_t time_base(void) { return now; }
-void graphics_retrace(void) { retraces++; }
+void graphics_retrace(double field_rate) { retraces++, retrace_rate = field_rate; }
 void vi_display_interrupt(int i) { fired[i]++; }
 int gx_screen_copy_went_to(uint32_t address) { return 1; }
 void gap_hit(const char *id, uint32_t detail) {}
@@ -68,6 +69,7 @@ int main(void) {
     vi_update(now);
   }
   CHECK(retraces >= 49 && retraces <= 51);
+  CHECK(fabs(retrace_rate - vi_field_rate()) < 0.01);  // Worked out here, on this thread, for the graphics thread to read.
   CHECK(fired[0] >= 24 && fired[0] <= 26);
   CHECK(fired[1] >= 24 && fired[1] <= 26);
   CHECK_EQ(fired[2], 0);  // Not enabled.

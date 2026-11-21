@@ -31,16 +31,10 @@ __attribute__((constructor)) static void timeline_start(void) {
   marks = calloc(MOST_MARKS, sizeof *marks);
 }
 
-static uint64_t now(void) {
-  struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
-  return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
-}
-
 void timeline_mark(const char *what, char phase) {
   if (!thread_number) thread_number = atomic_fetch_add(&threads, 1) + 1;
   unsigned at = atomic_fetch_add_explicit(&used, 1, memory_order_relaxed);
-  if (at < MOST_MARKS) marks[at] = (Mark){now(), what, thread_number, phase};
+  if (at < MOST_MARKS) marks[at] = (Mark){host_nanoseconds(), what, thread_number, phase};
 }
 
 static void write_out(void) {

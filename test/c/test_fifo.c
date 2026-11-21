@@ -27,7 +27,6 @@ int gx_bounding_box_read(uint32_t a, uint32_t *v) { return 0; }
 void gx_bounding_box_off(void) {}
 const GxBackend *gx_backend;
 int gx_shows_held;
-double vi_field_rate(void) { return 60; }
 void gx_clear(void) {}
 uint32_t gx_vertices_size(int f, int c) { return 0; }
 int gx_read_vertices(const uint8_t *d, int f, int c, Vertex *o) { return c; }

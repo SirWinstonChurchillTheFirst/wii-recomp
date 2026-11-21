@@ -69,6 +69,9 @@ int gx_transform_point(const Vertex *vertex, float point[3]);
 // Games' Downhill). So the very first frozen draw of a run has none, and is named.
 extern float gx_frozen_plane[3];
 extern int gx_frozen_plane_known, gx_frozen_plane_wanted;
+// How long a field of the screen lasts, in nanoseconds, as the video interface had it when
+// the last one began: 1/60 s before the first. Safe on any thread (gx_fifo.c).
+uint64_t gx_field_nanoseconds(void);
 // Lines (1) or points (2) are being drawn as quads, each corner moved by this much over w.
 extern int gx_expanding;
 extern float gx_expand_size[2];
