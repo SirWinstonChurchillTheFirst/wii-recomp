@@ -739,7 +739,8 @@ void gx_copy_to_texture(uint32_t control, int from_depth) {
     index_places();
   }
   // The same pages touched beside the last copy here as beside the ones before it, or not.
-  int same_shape = copy->address == address && copy->format == shape.format && copy->width == shape.width && copy->height == shape.height
+  // (Place 0 taken over above starts with nothing touched, so it starts a new streak.)
+  int same_shape = copy->format == shape.format && copy->width == shape.width && copy->height == shape.height
                 && copy->stride == shape.stride;
   if (!same_shape || !copy->touched_beside) copy->shared_streak = copy->shared_uses = 0;
   else if (copy->shared_streak < SHARED_STREAK) copy->shared_streak++;

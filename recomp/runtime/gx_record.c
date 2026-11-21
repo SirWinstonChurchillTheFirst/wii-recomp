@@ -35,7 +35,6 @@ static _Atomic int requested;  // Frames asked for, taken by the chip's side at 
 static char requested_path[4096], path[4096];
 static int frames_wanted, frames_done;
 int gx_recording;  // Read by the parser for every command, so it needn't call in here to learn there is nothing to do.
-#define recording gx_recording
 static Bytes fifo, data;
 static Update *updates;
 static size_t update_count, update_room;
@@ -130,7 +129,7 @@ static void start(int count) {
   memcpy(start_xf_registers, &gx.xf[XF_REGISTERS_START], sizeof start_xf_registers);
   memset(start_texture, 0, sizeof start_texture);
   gx_save_palettes(start_texture);
-  recording = 1;
+  gx_recording = 1;
   begin_frame();
   // The stage registers and constants share BP addresses, so the registers alone hold
   // only whichever was written last. Both are put back by commands, that one last.
@@ -157,7 +156,7 @@ static int write_words(FILE *to, uint64_t *at, const uint32_t *words, uint32_t c
 
 // The layout follows Dolphin's FifoDataFile.cpp, as dff.c reads it.
 static void finish(void) {
-  recording = 0;
+  gx_recording = 0;
   FILE *to = fopen(path, "wb");
   if (!to) { fprintf(stderr, "record: can't write %s\n", path); return; }
   uint64_t frame_list = HEADER_BYTES, update_list = frame_list + (uint64_t)frames_done * FRAME_BYTES;
@@ -206,7 +205,7 @@ void gx_record_list_leave(void) { depth--; }
 enum { COMMAND_CALL_LIST = 0x40, COMMAND_DRAW = 0x80 };
 
 void gx_record_command(const uint8_t *bytes, uint32_t count) {
-  if (!recording || depth) return;
+  if (!gx_recording || depth) return;
   if (!memory_taken && (bytes[0] >= COMMAND_DRAW || bytes[0] == COMMAND_CALL_LIST)) take_memory();
   add(&fifo, bytes, count);
 }
@@ -221,7 +220,7 @@ void gx_record_frame_shown(void) {
     if (from_environment) snprintf(requested_path, sizeof requested_path, "%s", asked + used), frames_wanted = count;
   }
   if (from_environment > 0 && --from_environment == 0) atomic_store(&requested, frames_wanted);
-  if (recording) {
+  if (gx_recording) {
     if (!memory_taken) take_memory();
     frames[frames_done].fifo_bytes = fifo.used - frames[frames_done].fifo_at;
     if (++frames_done == frames_wanted) finish();

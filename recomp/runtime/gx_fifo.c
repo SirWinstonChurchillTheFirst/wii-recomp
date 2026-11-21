@@ -39,7 +39,7 @@ enum {
 enum {
   BP_MASK = 0xfe, BP_DRAW_DONE = 0x45, BP_TOKEN = 0x47, BP_TOKEN_NOW = 0x48, BP_COPY = 0x52,
   BP_LOAD_PALETTE = 0x65, BP_BOUNDING_BOX = 0x55, BP_PIXEL_FORMAT = 0x43, PIXEL_FORMAT_MASK = 7, PIXEL_FORMAT_DEPTH = 3, BP_TEV_REGISTER = 0xe0, TEV_KONST_FLAG = 0x800000,
-  BP_GEN_MODE = 0x00, MULTISAMPLE_BIT = 9, Z_FREEZE_BIT = 19, BP_PRELOAD = 0x63,
+  BP_GEN_MODE = 0x00, MULTISAMPLE_BIT = 9, BP_PRELOAD = 0x63,
   PIXEL_FORMAT_RGB565_Z16 = 2, PIXEL_FORMAT_Y8 = 4, DEPTH_FORMAT_SHIFT = 3,
 };
 enum { XF_CLIP_DISABLE = 0x1005 };
@@ -270,12 +270,6 @@ static void write_bp(uint32_t value) {
       if (gap > gx_stats.worst_frame_ms) gx_stats.worst_frame_ms = gap;
       last_frame = frame_time;
       stage_frame(gap);
-      if (getenv("WII_RECOMP_PIPE_LOG")) {
-        static int told;
-        if (told++ % 600 < 4) fprintf(stderr, "pipe: picture copied to %08x from %u,%u size %ux%u, copy %06x, filter %06x %06x, clear %06x %06x, scissor %06x %06x\n",
-                                      gx.bp[BP_COPY_ADDRESS] << 5, gx.bp[0x49] & 0x3ff, (gx.bp[0x49] >> 10) & 0x3ff, (gx.bp[0x4a] & 0x3ff) + 1,
-                                      ((gx.bp[0x4a] >> 10) & 0x3ff) + 1, data, gx.bp[0x53], gx.bp[0x54], gx.bp[0x4f], gx.bp[0x50], gx.bp[0x20], gx.bp[0x21]);
-      }
       gx_stats.to_screen++;
       screen_copies[screen_copy_count++ % SCREEN_COPIES_KEPT] = gx.bp[BP_COPY_ADDRESS] << 5;
     }
@@ -633,20 +627,7 @@ static void ring_add(const uint8_t *bytes, uint32_t count) {
 #endif
 }
 #else
-static int start_commands_thread(void) { return 0; }
-static void lock_graphics(void);
-static void unlock_graphics(void);
-static int may_use_graphics(void);
-
-void gx_run_on_graphics(void (*work)(void *), void *argument) {
-  if (!may_use_graphics()) return;
-  lock_graphics();
-  work(argument);
-  unlock_graphics();
-}
-void gx_run_on_graphics_soon(void (*work)(void *), void *argument) { gx_run_on_graphics(work, argument); }
-int graphics_busy(void) { return 0; }
-static void ring_add(const uint8_t *bytes, uint32_t count) { (void)bytes; (void)count; }
+#error "the commands thread's ring is built for Linux, macOS and Windows"
 #endif
 
 // With no thread of their own, commands run on the game's, which holds this while it
@@ -742,7 +723,8 @@ static void pump(void) {
   uint32_t limit = ring_limit(end);
   if (title->fifo_breakpoints) check_fifo_marks(control, read_pair(CP_FIFO_READ), read_pair(CP_FIFO_WRITE), limit - base);
   // A game that turns breakpoints on wants them: honoured whenever the chip runs on the
-  // game's thread, as it always does on Windows, not only in games built to keep frames apart.
+  // game's thread (WII_RECOMP_GX_INLINE=1, or no ring), not only in games built to keep
+  // frames apart.
   int breaking = (title->fifo_breakpoints || threaded == 0) && (control & CONTROL_BREAK_ENABLE);
   uint32_t breakpoint = read_pair(CP_BREAKPOINT);
   if (at_breakpoint || held_at_token || resume_state != RUNNING) return;  // Bursts from the CPU land here too.
@@ -822,10 +804,7 @@ void graphics_pipe_write(uint32_t value, int bytes) { feed_stream(value, bytes);
 // GPFifoManager::ResetGatherPipe drops them. GXBeginDisplayList does it after pointing the
 // CPU's FIFO at the list, so a partly filled burst from before never lands in the list:
 // with them, a list came out 32 bytes longer than the game had measured it.
-void graphics_pipe_reset(void) {
-  if (burst_used && getenv("WII_RECOMP_PIPE_LOG")) fprintf(stderr, "pipe: %u bytes dropped at a WPAR write\n", burst_used);
-  burst_used = 0;
-}
+void graphics_pipe_reset(void) { burst_used = 0; }
 
 uint64_t graphics_next_due(void) {
   uint64_t token = atomic_load(&token_due), finish = atomic_load(&finish_due);

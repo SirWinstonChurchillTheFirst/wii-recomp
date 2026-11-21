@@ -1,7 +1,6 @@
 // Vertices: decodes each format the game declares into a buffer for the vertex
 // shader, which applies the matrices (gx_transform.c) and lights (gx_light.c).
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 

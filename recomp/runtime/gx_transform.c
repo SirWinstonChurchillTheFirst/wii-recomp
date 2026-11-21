@@ -153,25 +153,9 @@ static void read_projection(float rows[4][4]) {
   }
 }
 
-// Where a small draw lands, in the same units as gl_Position over w. Says no if a
-// vertex is behind the camera, where that can't be known this simply.
-int gx_transform_screen(const Vertex *vertex, float *x, float *y) {
-  float rows[4][4] = {{0}};
-  read_projection(rows);
-  const float *matrices = (const float *)&gx.xf[XF_MATRICES];
-  const float *p = vertex->position, *m = &matrices[vertex->matrix[VERTEX_MATRIX_POSITION] * WORDS_PER_ROW];
-  float view[4];
-  for (int row = 0; row < 3; row++) view[row] = m[row * 4] * p[0] + m[row * 4 + 1] * p[1] + m[row * 4 + 2] * p[2] + m[row * 4 + 3];
-  view[3] = 1;
-  float clip[2], w = 0;
-  for (int row = 0; row < 2; row++) clip[row] = rows[row][0] * view[0] + rows[row][1] * view[1] + rows[row][2] * view[2] + rows[row][3] * view[3];
-  for (int column = 0; column < 4; column++) w += rows[3][column] * view[column];
-  if (!(w > 1e-5f)) return 0;
-  *x = clip[0] / w;
-  *y = clip[1] / w;
-  return 1;
-}
-
+// Where a vertex lands, in the same units as gl_Position over w, with its depth from 0 to 1
+// before the viewport's depth range as point[2]. Says no if it's behind the camera, where
+// that can't be known this simply.
 int gx_transform_point(const Vertex *vertex, float point[3]) {
   float rows[4][4] = {{0}};
   read_projection(rows);
@@ -188,6 +172,15 @@ int gx_transform_point(const Vertex *vertex, float point[3]) {
   point[0] = clip[0] / w;
   point[1] = clip[1] / w;
   point[2] = clip[2] / w + 1;
+  return 1;
+}
+
+// The same without the depth: where a small draw lands.
+int gx_transform_screen(const Vertex *vertex, float *x, float *y) {
+  float point[3];
+  if (!gx_transform_point(vertex, point)) return 0;
+  *x = point[0];
+  *y = point[1];
   return 1;
 }
 
@@ -323,8 +316,9 @@ static void add_position(ShaderText *text) {
     "  vec4 clip = vec4(dot(projection[0], view), dot(projection[1], view), dot(projection[2], view), dot(projection[3], view));\n"
     // The far and near planes themselves are inside. A menu drawn flat on the far plane
     // (Mario & Sonic at the Olympic Winter Games, at z -1 with far at 1) comes out a
-    // rounding step past it, and was clipped away whole: a black screen. Dolphin's vertex
-    // shader shrinks its clipping depth by a ten-millionth for the same reason.
+    // rounding step past it, and was clipped away whole: a black screen. Here a depth up to
+    // a millionth of w past either plane counts as on it; Dolphin's vertex shader shrinks its
+    // clipping depth by a ten-millionth for the same reason.
     "  if (clip.z < -clip.w && clip.z > -clip.w * 1.000001) clip.z = -clip.w;\n"
     "  if (clip.z > 0.0 && clip.z < clip.w * 0.000001) clip.z = 0.0;\n"
     "  gl_Position = vec4(clip.xy, GX_DEPTH(clip.z, clip.w), clip.w);\n");

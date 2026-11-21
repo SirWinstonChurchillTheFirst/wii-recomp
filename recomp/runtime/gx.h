@@ -125,6 +125,7 @@ void gx_xf_note(uint32_t address, uint32_t count);
 // memo says it was.
 DecodedTexture gx_decode_texture(int map, TextureMemo *memo);
 uint64_t gx_palette_identity(uint32_t image, uint32_t palette);  // Which colors a paletted image has now; 0 for others.
+void gx_palette_peek(uint32_t slot, uint16_t *out, int count);  // A palette's first entries, for the draw inspector.
 void gx_load_palette(void);
 void gx_restore_palettes(const uint8_t *texture_memory);
 void gx_save_palettes(uint8_t *texture_memory);
@@ -180,12 +181,14 @@ typedef struct {
 // What a shader reads at run time. The layout matches the PixelValues block.
 typedef struct {
   float registers[4][4], constants[4][4];
-  float alpha_settings[4];  // First and second alpha reference, the constant output alpha, then the depth bias.
+  float alpha_settings[4];  // First and second alpha reference, the constant output alpha, then the depth bias,
+                            // or with frozen depth the plane's depth at the picture's corner.
   float indirect_row_s[TEV_INDIRECT_MATRICES][4], indirect_row_t[TEV_INDIRECT_MATRICES][4];
   float map_size[MAX_TEXTURE_MAPS][4];  // Each map's width and height, then each coordinate's scale.
   float map_bias[MAX_TEXTURE_MAPS / 4][4];
   float fog_color[4], fog_settings[4];  // Color in 255ths, then A, C, B's magnitude and B's shift.
-  float fog_range_center[4];  // The picture column at the center and the viewport's half width.
+  float fog_range_center[4];  // The picture column at the center and the viewport's half width, then with
+                              // frozen depth the plane's slope across and down, per pixel.
   float fog_range_k[3][4];  // Ten values from the edge in to the center.
 } TevValues;
 

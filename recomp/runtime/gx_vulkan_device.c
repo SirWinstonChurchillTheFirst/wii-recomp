@@ -231,7 +231,7 @@ static VkDeviceMemory allocate(VkMemoryRequirements needs, VkMemoryPropertyFlags
   vkGetPhysicalDeviceMemoryProperties(vk.physical, &memory);
   VkMemoryPropertyFlags tries[2] = {wanted | needed, needed};
   VkResult result = VK_ERROR_FEATURE_NOT_PRESENT;
-  uint32_t tried = 0;
+  uint32_t tried = 0, tried_wanted = 0;
   for (int attempt = 0; attempt < 2; attempt++) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
       if (!(needs.memoryTypeBits & (1u << i)) || (tried & (1u << i))) continue;
@@ -240,8 +240,12 @@ static VkDeviceMemory allocate(VkMemoryRequirements needs, VkMemoryPropertyFlags
       VkMemoryAllocateInfo info = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = needs.size, .memoryTypeIndex = i};
       VkDeviceMemory got;
       result = vkAllocateMemory(vk.device, &info, 0, &got);
-      if (result == VK_SUCCESS) return got;
+      if (result != VK_SUCCESS) continue;
+      static int told;  // Once: what's put elsewhere may be slower to reach.
+      if (attempt && tried_wanted && !told++) fprintf(stderr, "vulkan: the memory wanted is full, so some goes in another kind\n");
+      return got;
     }
+    if (!attempt) tried_wanted = tried;
   }
   if (!tried) {
     fprintf(stderr, "stop: vulkan: no suitable memory\n");
