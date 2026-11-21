@@ -3,6 +3,8 @@
 // which Perfetto (ui.perfetto.dev) or chrome://tracing shows. Marks cost a load and a
 // branch when off.
 #pragma once
+#include <stdint.h>
+#include <time.h>
 
 extern int timeline_on;
 void timeline_mark(const char *what, char phase);  // 'B' begins a span, 'E' ends it, 'i' is a moment.
@@ -12,3 +14,11 @@ void timeline_frame_shown(void);                    // Counts frames, to know wh
 #define TIMELINE_BEGIN(what) do { if (timeline_on) timeline_mark(what, 'B'); } while (0)
 #define TIMELINE_END(what) do { if (timeline_on) timeline_mark(what, 'E'); } while (0)
 #define TIMELINE_MOMENT(what) do { if (timeline_on) timeline_mark(what, 'i'); } while (0)
+
+// The host's steady clock, in nanoseconds: what the marks are timed by, and what the graphics
+// thread holds pictures for the screen's fields by.
+static inline uint64_t host_nanoseconds(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}

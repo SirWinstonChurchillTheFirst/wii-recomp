@@ -68,6 +68,8 @@ const char *drive_platform(void) {
   return "linux-aarch64";
 #elif defined(__linux__) && defined(__x86_64__)
   return "linux-x86_64";
+#elif defined(_WIN32) && defined(__x86_64__)
+  return "windows-x86_64";
 #else
   return "unknown";
 #endif
@@ -347,6 +349,8 @@ int drive_native(const char *folder, char *path, size_t limit) {
   snprintf(path, limit, "%s/%016llx.%s", folder, (unsigned long long)title_check(code, (unsigned long)native.size),
 #ifdef __APPLE__
            "dylib");
+#elif defined(_WIN32)
+           "dll");
 #else
            "so");
 #endif

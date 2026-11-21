@@ -137,11 +137,20 @@ class Runtime(unittest.TestCase):
         storage, saves = self.folder / "storage", self.folder / "saves"
         (storage / "shared2/wc24").mkdir(parents=True)
         (storage / "shared2/wc24/nwc24msg.cfg").write_bytes(b"WcCf" + bytes(0x3fc))
-        saves.mkdir()
+        (saves / "tmp/sys").mkdir(parents=True)  # Half a save a game was making when the power went.
+        (saves / "tmp/sys/partial").write_bytes(b"half")
+        (saves / "kept").write_text("beside /tmp")
         before = tree(storage)
         self.build_and_run([HERE / "c/test_system_files.c", RUNTIME / "system_files.c", RUNTIME / "fs.c",
-                            RUNTIME / "files.c", RUNTIME / "gaps.c"], storage, saves)
+                            RUNTIME / "files.c", RUNTIME / "gaps.c", RUNTIME / "wc24.c"], storage, saves)
         self.assertEqual(tree(storage), before)
+        # IOS empties /tmp as it starts, and only /tmp.
+        self.assertTrue((saves / "tmp").is_dir())
+        self.assertEqual(list((saves / "tmp").iterdir()), [])
+        self.assertEqual((saves / "kept").read_text(), "beside /tmp")
+
+    def test_low_memory_a_disc_starts_with(self):
+        self.build_and_run([HERE / "c/test_loader.c", RUNTIME / "loader.c"])
 
     def test_modules_loaded_at_run_time(self):
         sources = [HERE / "c/test_modules.c", RUNTIME / "dispatch.c", RUNTIME / "interp.c", RUNTIME / "quantized.c", RUNTIME / "profile.c"]
@@ -175,6 +184,20 @@ class Runtime(unittest.TestCase):
         (disc / "ticket.bin").write_bytes(disc_ticket)
         sources = ["test_es.c", "es.c", "es_titles.c", "es_content.c", "opera_trust.c", "titles.c", "files.c", "drive.c", "memory_watch.c", "title.c"]
         self.build_and_run([HERE / "c" / sources[0]] + [RUNTIME / name for name in sources[1:]], storage, saves, disc / "sys")
+
+
+class ExitTasks(unittest.TestCase):
+    def test_power_off_does_what_exit_would(self):
+        # The console's power-off ends the program with _exit, which runs no atexit
+        # handlers, so it calls each one itself (console.c). One left out there was the
+        # local server left running after the window closed.
+        registered = {name: source.name for source in RUNTIME.glob("*.c")
+                      for name in re.findall(r"\batexit\((\w+)\)", source.read_text())}
+        self.assertGreaterEqual(len(registered), 5)
+        console = (RUNTIME / "console.c").read_text()
+        power_off = re.search(r"void console_power_off\(const char \*how\) \{(.*?)\n\}", console, re.S).group(1)
+        missing = {name: source for name, source in registered.items() if not re.search(rf"\b{name}\(\);", power_off)}
+        self.assertEqual(missing, {})
 
 
 def tmd(title, contents, ios=0x0000000100000050, version=0x1234, boot=1):

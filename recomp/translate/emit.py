@@ -32,8 +32,6 @@ from functions import add_starts, add_unreached_code, branch_target, find_functi
 from signatures import load_entries, resolve
 
 FUNCTIONS_PER_FILE = 150
-# The share of all counted runs that the speed tier covers, most-run functions first.
-HOT_SHARE = 0.999
 GROUP_FILE = re.compile(r"(part|cold)\d{4}\.c")
 # Filled in for each game from signatures.py. REPLACED holds the system functions we
 # replace rather than translate, as address -> (reason, C body). IDLE_LOOPS holds loops
@@ -47,6 +45,7 @@ IOS_OFFSET = 0x184  # The IOS the title asks for, in its TMD.
 TITLE_ID_OFFSET = 0x18c  # In the disc's tmd.bin.
 DECREMENTER = 22
 CACHE_DMA_LOW = 923
+WRITE_PIPE_ADDRESS = 921  # WPAR: where the CPU's write-gather pipe sends its bursts.
 LINK = 8
 COUNT = 9
 XER = 1
@@ -396,6 +395,8 @@ def emit_any(address, word, name):
         n = spr_number(word)
         special = {DECREMENTER: "decrementer_get()", LINK: "cpu.lr", COUNT: "cpu.ctr", XER: "xer_get()",
                    TIME_LOW: "(uint32_t)guest_time_base()", TIME_HIGH: "(uint32_t)(guest_time_base() >> 32)"}
+        if n == WRITE_PIPE_ADDRESS:  # Its low bit says the pipe holds bytes; read as empty, as Dolphin does.
+            return f"cpu.r[{d}] = cpu.spr[{n}] & ~1u;"
         return f"cpu.r[{d}] = {special.get(n, f'cpu.spr[{n}]')};"
     if name == "mtspr":
         n = spr_number(word)
@@ -409,6 +410,8 @@ def emit_any(address, word, name):
             return f"xer_set(cpu.r[{d}]);"
         if n == CACHE_DMA_LOW:
             return f"cpu.spr[{n}] = cpu.r[{d}]; locked_cache_transfer();"
+        if n == WRITE_PIPE_ADDRESS:
+            return f"cpu.spr[{n}] = cpu.r[{d}]; graphics_pipe_reset();"
         if n in (TIME_LOW_WRITE, TIME_HIGH_WRITE):
             return f"cpu.spr[{n}] = cpu.r[{d}]; guest_time_base_set({int(n == TIME_HIGH_WRITE)}, cpu.r[{d}]);"
         return f"cpu.spr[{n}] = cpu.r[{d}];"
@@ -518,6 +521,9 @@ def function_name(address):
 # Set while a run-time-loaded module is translated: where its code and imports stand in,
 # and the C names of the addresses its linker settles on. See modules.py.
 MODULE = None
+# Program addresses of functions whose calls are to be logged, for finding who calls what
+# when: WII_RECOMP_EMIT_TRACE=80573fd0,80574268 while building.
+TRACED = {int(text, 16) for text in os.environ.get("WII_RECOMP_EMIT_TRACE", "").split(",") if text}
 FIELD_STAND_IN = 0x7b5d  # Put in place of a linker-filled immediate, then replaced by C.
 
 
@@ -527,6 +533,8 @@ def address_text(address):
         return f"({MODULE['prefix']}_code + 0x{address - MODULE['base']:x}u)"
     if MODULE and address in MODULE.get("fixed", {}):
         return f"0x{MODULE['fixed'][address]:x}u"
+    if MODULE and address in MODULE.get("linked", {}):
+        return f"module_branch_target({MODULE['prefix']}_code + 0x{MODULE['linked'][address]:x}u)"
     if MODULE and MODULE["imports"] <= address < MODULE["imports"] + 4 * MODULE["import_count"]:
         return f"{MODULE['prefix']}_import[{(address - MODULE['imports']) // 4}]"
     return f"0x{address:x}u"
@@ -543,9 +551,12 @@ def emit_field(address, word, name):
     """An instruction whose immediate the module's linker fills in, as C that works it out."""
     kind, section, symbol, addend = MODULE["fields"][address]
     prefix = MODULE["prefix"]
-    target = f"{prefix}_section[{section}]" if symbol is None else f"{prefix}_import[{symbol}]"
-    target = f"({target} + 0x{addend:x}u)"
-    value = {"lo": f"({target} & 0xffffu)", "hi": f"(({target}) >> 16)", "ha": f"((({target}) + 0x8000u) >> 16)"}[kind]
+    if kind == "linked":  # Against another module: the immediate the game's linker wrote, read as it runs.
+        value = f"(rd32({prefix}_code + 0x{addend:x}u) & 0xffffu)"
+    else:
+        target = f"{prefix}_section[{section}]" if symbol is None else f"{prefix}_import[{symbol}]"
+        target = f"({target} + 0x{addend:x}u)"
+        value = {"lo": f"({target} & 0xffffu)", "hi": f"(({target}) >> 16)", "ha": f"((({target}) + 0x8000u) >> 16)"}[kind]
     text = emit(address, (word & 0xffff0000) | FIELD_STAND_IN, name)
     forms = [(f"0x{FIELD_STAND_IN << 16:x}u", f"({value} << 16)"), (f"0x{FIELD_STAND_IN:x}u", value),
              (str(FIELD_STAND_IN), f"(int32_t)(int16_t){value}")]
@@ -566,6 +577,8 @@ def emit_function(program, start, body, starts):
         reason, body_text = REPLACED[start]
         return f"void {function_name(start)}(void) {{ /* {reason} */ {body_text} }}", set(), Counter()
     lines, labels = [f"void {function_name(start)}(void) {{ POLL();"], set()
+    if start in TRACED:  # WII_RECOMP_EMIT_TRACE: each call of these is logged as the game runs (debug.c).
+        lines.append(f"{{ extern void debug_trace_call(unsigned); debug_trace_call(0x{start:x}u); }}")
     ordered = sorted(body)
     for address in ordered:
         word = program.word(address)
@@ -778,9 +791,19 @@ def title_description(program_bytes, tmd, values, function_count, module_count, 
             "};\n")
 
 
-# Each module's code stands in at MODULE_BASE + n * MODULE_SPACING, and its imports 16 MiB
-# after that, within a branch's reach of all its code.
-MODULE_BASE, MODULE_IMPORTS, MODULE_SPACING = 0xc0000000, 0xc1000000, 0x02000000
+# Each module's code stands in from MODULE_BASE on, one after another, with its imports
+# just after its code, within a branch's reach of all of it. Mario Party 9 has 115 modules,
+# 47 MiB of code, which a fixed 32 MiB each would take far past 32 bits.
+MODULE_BASE, MODULE_ALIGN = 0xc0000000, 0x10000
+
+
+def align_up(value, step):
+    return (value + step - 1) // step * step
+
+
+def module_imports_at(module, base):
+    """Where a module's import stand-ins start when its code stands in at `base`."""
+    return align_up(base + module.sections[module.code_section()][1], MODULE_ALIGN)
 
 
 def export_addresses(system, functions):
@@ -793,8 +816,11 @@ def export_addresses(system, functions):
     """
     starts = sorted(functions)
     found = {}
-    for path in sorted((system / "modules").glob("*.sel")):
+    files = system.parent / "files"
+    for path in sorted((system / "modules").glob("*.sel")) + (sorted(files.rglob("*.sel")) if files.is_dir() else []):
         exported = modules.parse_rso(path.stem, path.read_bytes())
+        if not exported:
+            continue
         by_section = {}
         for name, section, value in exported.exports:
             by_section.setdefault(section, []).append((name, value))
@@ -821,13 +847,18 @@ def title_modules(system):
     files = system.parent / "files"
     if files.is_dir():
         for path in sorted(files.rglob("*")):
-            if path.is_file() and MODULE_FILE.search(path.name):
+            folders = {part.lower() for part in path.relative_to(files).parts[:-1]}
+            if path.is_file() and (MODULE_FILE.search(path.name) or folders & MODULE_FOLDERS):
                 found += [(str(path.relative_to(files)), module) for module in modules.find_modules([(path.name, path.read_bytes())])
-                          if module.kind == "rel"]
+                          if not modules.is_export_list(module)]
     return [(name, module) for name, module in found if module]
 
 
 # A file that holds modules: a .rel or .rso, or an archive of them (RELS.arc and the like).
+# A folder whose files are modules whatever they're called, such as Super Paper Mario's
+# rel/rel.bin, or Mario Sports Mix's Module/Final/*.cmp. Only files that read as a module
+# are taken from it.
+MODULE_FOLDERS = {"rel", "rels", "module", "modules"}
 MODULE_FILE = re.compile(r"\.(rel|rso)(\.[a-z0-9]+)?$|^rels?\b.*\.(arc|szs)$", re.IGNORECASE)
 
 
@@ -842,7 +873,23 @@ def module_program_calls(found):
     return {r.addend for _, module in found if module.kind == "rel" for r in module.fixed if r.kind == modules.REL24}
 
 
-def emit_module(module, number, out, exports, program_starts, counts):
+def links_between(found):
+    """{module number: code offsets} that other REL modules branch or point to, which are
+    function starts there even when nothing inside the module leads to them."""
+    by_id = {module.module_id: module for _, module in found if module.kind == "rel" and module.module_id}
+    starts = {}
+    for _, module in found:
+        for reloc in module.external if module.kind == "rel" else ():
+            target, section = reloc.symbol
+            other = by_id.get(target)
+            if not other or reloc.kind not in (modules.REL24, modules.ADDR32) or section not in other.executable:
+                continue
+            if len(other.executable) == 1:
+                starts.setdefault(target, set()).add(reloc.addend)
+    return starts
+
+
+def emit_module(module, number, base, imports, out, exports, program_starts, counts, extra_starts=()):
     """Translates a run-time-loaded module's code into native functions, wherever it is
     loaded. Writes m<number>_*.c and returns the C for its entry in the module table, or
     None if the module can't be prepared, which leaves it to the interpreter.
@@ -851,9 +898,8 @@ def emit_module(module, number, out, exports, program_starts, counts):
     runs: functions that did the work compile for speed, the rest quickly, counting runs
     into m<number>_counts."""
     global MODULE
-    base, imports = MODULE_BASE + number * MODULE_SPACING, MODULE_IMPORTS + number * MODULE_SPACING
     try:
-        prepared = modules.prepare(module, base, imports)
+        prepared = modules.prepare(module, base, imports, extra_starts)
     except modules.Unsupported as reason:
         print(f"{module.name}: left to the interpreter, {reason}")
         return None
@@ -866,9 +912,16 @@ def emit_module(module, number, out, exports, program_starts, counts):
     functions = {}
     add_starts(program, functions, prepared.starts)
     prefix = f"m{number}"
-    import_count = len(module.imports) + len(prepared.fixed_calls)
+    import_count = len(module.imports) + len(prepared.fixed_calls) + len(prepared.linked_calls)
     fixed = {imports + 4 * n: address for n, address in prepared.fixed_calls.items()}
-    MODULE = {"prefix": prefix, "base": base, "size": len(prepared.code), "imports": imports,
+    linked = {imports + 4 * n: at for n, at in prepared.linked_calls.items()}
+    # An RSO's call to something the program doesn't export goes to another module, or to
+    # itself. The game links those again whenever a module comes or goes (Mario Sports Mix's
+    # system module calls into whichever sport is loaded), so the branch is read each time.
+    late = {index for index, site in prepared.import_sites.items()
+            if module.kind != "rel" and site[0] == "branch" and module.imports[index] not in exports}
+    linked.update({imports + 4 * index: prepared.import_sites[index][1] for index in late})
+    MODULE = {"prefix": prefix, "base": base, "size": len(prepared.code), "imports": imports, "linked": linked,
               "import_count": import_count, "fields": prepared.fields, "fixed": fixed, "program": program_starts}
     counting = counts is not None
     try:
@@ -879,7 +932,7 @@ def emit_module(module, number, out, exports, program_starts, counts):
         counter = (f"extern uint32_t {prefix}_counts[];\n"
                    f"#define POLL_COUNTED(i) do {{ {prefix}_counts[i]++; POLL(); }} while (0)\n")
         write_if_changed(out / f"{prefix}_functions.h",
-                         f'#include "../../runtime/cpu.h"\nextern uint32_t {prefix}_code, {prefix}_section[], {prefix}_import[];\n'
+                         f'#include "../../runtime/modules.h"\nextern uint32_t {prefix}_code, {prefix}_section[], {prefix}_import[];\n'
                          f"{counter}{declarations}\n")
         written, unknown = write_groups(program, functions, addresses, fast, out, prefix=prefix)
     finally:
@@ -890,6 +943,8 @@ def emit_module(module, number, out, exports, program_starts, counts):
     for index in range(import_count):
         site = prepared.import_sites.get(index)
         if site is None:
+            sites.append("{0, 0, 0, 0, 0}")
+        elif index in late:
             sites.append("{0, 0, 0, 0, 0}")
         elif site[0] == "branch":
             sites.append(f"{{1, 0x{site[1]:x}u, 0, 0, 0x{exports.get(module.imports[index], 0):x}u}}")
@@ -932,9 +987,24 @@ def write_modules(found, out, exports, program_starts, module_counts=None):
     """Every module the title loads at run time as native code, where it can be prepared.
     `module_counts` is {module name: {offset: runs}} when building in two tiers."""
     prefixes = []
+    base = MODULE_BASE
+    between = links_between(found)
     for number, (_, module) in enumerate(found):
         counts = None if module_counts is None else module_counts.get(module.name, {})
-        prefix = emit_module(module, number, out, exports, program_starts, counts)
+        extra = between.get(module.module_id, ()) if module.kind == "rel" else ()
+        try:
+            imports = module_imports_at(module, base)  # Finds the code section, which can't always be told.
+        except modules.Unsupported as reason:
+            print(f"{module.name}: left to the interpreter, {reason}")
+            imports, prefix = base, None
+        else:
+            prefix = emit_module(module, number, base, imports, out, exports, program_starts, counts, extra)
+        # Room for every import stand-in: the module's own, and one per program or module
+        # function it branches to, which is at most one per relocation.
+        stand_ins = len(module.imports) + len(module.fixed) + len(module.external)
+        base = align_up(imports + 4 * stand_ins, MODULE_ALIGN) + MODULE_ALIGN
+        if base >= 0xfff00000:
+            raise SystemExit("the modules' code doesn't fit in the stand-in space")
         if prefix is None:
             for stale in out.glob(f"m{number}_*"):
                 stale.unlink()
@@ -1037,16 +1107,12 @@ def read_counts(path):
     return counts, module_counts
 
 
-def choose_fast(counts, share=HOT_SHARE):
-    """The fewest functions, most-run first, that together hold `share` of all counted runs."""
-    total = sum(counts.values())
-    chosen, covered = set(), 0
-    for address, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
-        if covered >= share * total:
-            break
-        chosen.add(address)
-        covered += count
-    return chosen
+def choose_fast(counts):
+    """Every function that ran in a profiled session. Most of the runs are in a few hundred
+    functions, but code that runs once, as a race or a level starts, matters too: left in
+    the quick tier it made a 160 ms hitch at the start of Mario Kart Wii's first race.
+    Code that never ran stays quick to compile."""
+    return {address for address, count in counts.items() if count > 0}
 
 
 def virtual_bluetooth_keeps(entry):
@@ -1088,7 +1154,7 @@ def main():
     # Program functions only its run-time modules call: by name from its export list for
     # RSOs, by address for RELs.
     found = title_modules(dol.parent)
-    exports = export_addresses(dol.parent, functions) if (dol.parent / "modules").is_dir() else {}
+    exports = export_addresses(dol.parent, functions)
     called = module_imports(found) if exports else set()
     program_calls = {a for a in module_program_calls(found) if program.is_code(a)}
     add_starts(program, functions, program_calls)

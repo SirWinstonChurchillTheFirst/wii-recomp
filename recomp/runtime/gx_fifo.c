@@ -10,7 +10,15 @@
 #include <sched.h>
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
+#ifdef __linux__
+#include <linux/futex.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#undef interface
 #endif
 
 #include "timeline.h"
@@ -31,7 +39,7 @@ enum {
 enum {
   BP_MASK = 0xfe, BP_DRAW_DONE = 0x45, BP_TOKEN = 0x47, BP_TOKEN_NOW = 0x48, BP_COPY = 0x52,
   BP_LOAD_PALETTE = 0x65, BP_BOUNDING_BOX = 0x55, BP_PIXEL_FORMAT = 0x43, PIXEL_FORMAT_MASK = 7, PIXEL_FORMAT_DEPTH = 3, BP_TEV_REGISTER = 0xe0, TEV_KONST_FLAG = 0x800000,
-  BP_GEN_MODE = 0x00, MULTISAMPLE_BIT = 9, Z_FREEZE_BIT = 19, BP_PRELOAD = 0x63,
+  BP_GEN_MODE = 0x00, MULTISAMPLE_BIT = 9, BP_PRELOAD = 0x63,
   PIXEL_FORMAT_RGB565_Z16 = 2, PIXEL_FORMAT_Y8 = 4, DEPTH_FORMAT_SHIFT = 3,
 };
 enum { XF_CLIP_DISABLE = 0x1005 };
@@ -83,7 +91,17 @@ static uint8_t stream[STREAM_BYTES];
 static uint32_t stream_used;
 static uint8_t burst[BURST_BYTES];
 static uint32_t burst_used;
-static uint32_t pe_enabled, pe_status, pe_token;
+static uint32_t pe_enabled;
+// The token's value and the signals' status are set by the game's thread, and with a
+// BP_TOKEN_NOW also by the commands thread, which reads the status to do it.
+static _Atomic uint32_t pe_status, pe_token;
+// The last token the chip came to. The game sees it (pe_token) when that token's interrupt
+// is raised, not when it's parsed: the chip here is through a frame's tokens in
+// microseconds, and a handler still on its way for an earlier one would read the frame's
+// last token, which then came round again with its own interrupt. Mario & Sonic at the
+// Olympic Winter Games wakes its main thread on that token, so the second one ended its
+// wait for the screen and the game ran hundreds of frames a second.
+static _Atomic uint32_t token_parsed;
 static int frame_shown;  // A copy to the screen was just read.
 static _Atomic uint64_t finish_due, token_due;
 static int at_breakpoint;
@@ -131,7 +149,6 @@ static void copy_gaps(uint32_t control) {
 static void setting_gaps(uint32_t reg, uint32_t data) {
   if (reg == BP_GEN_MODE) {
     if ((data >> MULTISAMPLE_BIT) & 1) gap_hit("pixel.multisample_and_aa_modes", MULTISAMPLE_BIT);
-    if ((data >> Z_FREEZE_BIT) & 1) gap_hit("pixel.z_freeze", Z_FREEZE_BIT);
   } else if (reg == BP_PIXEL_FORMAT) {
     uint32_t format = data & PIXEL_FORMAT_MASK;
     if (format == PIXEL_FORMAT_RGB565_Z16) gap_hit("pixel.z16_precision_formats", (data >> DEPTH_FORMAT_SHIFT) & 7);
@@ -139,6 +156,74 @@ static void setting_gaps(uint32_t reg, uint32_t data) {
   } else if (reg == BP_PRELOAD && data) {
     gap_hit("gx.0x60_0x63_texture_preload", data);  // The SDK writes 0 here to end a sync.
   }
+}
+
+// A real chip takes milliseconds over a frame, so it never finishes two for one field of
+// the screen. This one is through a frame in microseconds, and a game paced by the chip
+// rather than the screen runs away: Mario & Sonic at the Olympic Winter Games, once its
+// "drawing done" flag is a frame out of step, is woken from its wait for the screen by each
+// frame's end and made 600 to 900 frames a second. So a picture copied to a new
+// framebuffer in the same field as the last, and less than a third of a field after it,
+// waits on the commands thread until the screen's next field. Two further apart are let
+// through: a frame that takes about a field (Mario Sports Mix on a small machine) ends
+// now just before a field begins and now just after, and holding the second of those
+// made every tenth picture late. But no more pictures than fields are let through over
+// time: each field allows one, a field that passed with none leaves its one for the next
+// (so the two of Mario Sports Mix pass), and a picture with none left waits for the next
+// field. Without that the same game, in a scene its frames take 11 to 15 ms, made 68
+// pictures a second for a screen that shows 60, and its models came out torn into long
+// triangles across the picture; held to the screen's count they are whole.
+// The wait also ends a field after the last one began by the host's clock: the game's
+// thread, which counts the fields, may be waiting for this thread.
+// WII_RECOMP_FRAMES_UNHELD=1 turns it off.
+static _Atomic unsigned fields_begun;
+static _Atomic uint64_t field_began;  // Host nanoseconds.
+// Worked out by the video interface on the game's thread, as each field begins: the
+// commands thread can't ask vi.c, whose timing the game's thread rewrites when it
+// changes the video mode.
+static _Atomic uint64_t field_length = 1000000000ull / 60;
+static _Thread_local int on_commands_thread;
+static void run_handed(int between);
+static void idle_wait(void);
+
+static void hold_for_field(uint32_t address) {
+  enum { MOST_ALLOWED = 2 };
+  static unsigned last_field = ~0u, counted_field;
+  static uint32_t last_address;
+  static uint64_t last_time;
+  static int off = -1, allowed = MOST_ALLOWED;
+  if (off < 0) off = getenv("WII_RECOMP_FRAMES_UNHELD") != 0;
+  unsigned field = atomic_load(&fields_begun);
+  uint64_t field_time = gx_field_nanoseconds(), now = host_nanoseconds();
+  int new_picture = address != last_address;
+  allowed += (int)(field - counted_field);
+  if (allowed > MOST_ALLOWED) allowed = MOST_ALLOWED;
+  counted_field = field;
+  int close = field == last_field && now - last_time < field_time / 3;
+  if (!off && on_commands_thread && new_picture && (close || allowed <= 0)) {
+    uint64_t give_up = atomic_load(&field_began) + field_time + 2000000u;
+    TIMELINE_BEGIN("held for the field");
+    while (atomic_load(&fields_begun) == field && host_nanoseconds() < give_up) {
+      run_handed(1);
+      // A picture held for its moment on the screen comes due during this wait as at any
+      // other time: left until the wait was over, it was shown late and the next one right
+      // after it, two pictures 3 ms apart and then none for 30.
+      if (gx_backend->show_held) gx_backend->show_held();
+      idle_wait();
+    }
+    TIMELINE_END("held for the field");
+    unsigned after = atomic_load(&fields_begun);
+    allowed += (int)(after - counted_field);
+    if (allowed > MOST_ALLOWED) allowed = MOST_ALLOWED;
+    counted_field = field = after;
+    now = host_nanoseconds();
+  }
+  if (new_picture) {
+    last_time = now;
+    if (allowed > 0) allowed--;
+  }
+  last_field = field;
+  last_address = address;
 }
 
 static void write_bp(uint32_t value) {
@@ -162,7 +247,9 @@ static void write_bp(uint32_t value) {
     finish_due = time_base() + SIGNAL_DELAY_TICKS;
   }
   else if (reg == BP_TOKEN || reg == BP_TOKEN_NOW) {
-    pe_token = data & 0xffff;
+    atomic_store(&token_parsed, data & 0xffff);
+    // With no interrupt for it, the value shows at once unless a handler is on its way.
+    if (reg == BP_TOKEN_NOW && !atomic_load(&token_due) && !(pe_status & PE_TOKEN_DONE)) pe_token = data & 0xffff;
     TIMELINE_MOMENT("token read");
     if (reg == BP_TOKEN) token_due = time_base() + SIGNAL_DELAY_TICKS;
     if (reg == BP_TOKEN && paces_by_token) {
@@ -188,6 +275,7 @@ static void write_bp(uint32_t value) {
     }
     // The chip copies the picture out first, then clears for the next frame.
     if (data & (1u << COPY_TO_SCREEN_BIT)) {
+      hold_for_field(gx.bp[BP_COPY_ADDRESS] << 5);
       gx_bounding_box_off();  // As Dolphin does at a copy to the screen.
       uint64_t present_start = time_base();
       TIMELINE_BEGIN("present");
@@ -198,7 +286,11 @@ static void write_bp(uint32_t value) {
       frame_shown = 1;
     }
     else gx_copy_to_texture(data, (gx.bp[BP_PIXEL_FORMAT] & PIXEL_FORMAT_MASK) == PIXEL_FORMAT_DEPTH);
-    if (data & (1u << COPY_CLEAR_BIT)) gx_clear();
+    if (data & (1u << COPY_CLEAR_BIT)) {
+      TIMELINE_BEGIN("clear");
+      gx_clear();
+      TIMELINE_END("clear");
+    }
   }
 }
 
@@ -248,7 +340,9 @@ static uint32_t parse_command(const uint8_t *p, uint32_t left) {
     uint8_t *list = host(address);
     if (list) {
       GxCalledList outer = gx_called_list;
-      gx_called_list = (GxCalledList){address, list_bytes, watch_range(address, list_bytes), list};
+      // Watched only for keeping its draws (gx_read_list_vertices): watching takes a lock for each call,
+      // and a list the game rewrites every frame would stop its thread at the first write each time.
+      gx_called_list = (GxCalledList){address, list_bytes, gx_lists_kept() ? watch_range(address, list_bytes) : WATCH_NONE, list};
       gx_record_list_enter();
       gx_parse(list, list_bytes);
       gx_record_list_leave();
@@ -284,7 +378,7 @@ static uint32_t parse_command(const uint8_t *p, uint32_t left) {
 // after the command that showed one.
 static uint32_t parse_one(const uint8_t *p, uint32_t left) {
   uint32_t used = parse_command(p, left);
-  if (used) gx_record_command(p, used);
+  if (used && gx_recording) gx_record_command(p, used);
   if (frame_shown) {
     frame_shown = 0;
     gx_record_frame_shown();
@@ -316,7 +410,8 @@ static void write_pair(uint32_t low_address, uint32_t value) {
 // FIFO breakpoints needs the chip in step with it, and stays on this thread, as does
 // WII_RECOMP_GX_INLINE=1.
 static int threaded = -1;
-#if defined(__linux__) || defined(__APPLE__)
+static uint64_t ring_added;  // Every byte handed to the commands thread, for the stream report.
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
 #define RING_BYTES (16u * 1024u * 1024u)
 #define EMPTY_TURNS_BEFORE_SLEEP 200
 #define EMPTY_SLEEP_NANOSECONDS 50000
@@ -334,7 +429,12 @@ static _Atomic int handed_waiting, handed_done;
 
 static void run_handed(int between) {
   if (!atomic_load_explicit(&handed_waiting, memory_order_acquire) || (between && !handed.soon)) return;
+  // Work handed in between two draws may leave the backend's draw state (a held copy read
+  // back when the game touches its page ends the pass): the next draw sets it all again.
+  gx_settings_written++;
+  TIMELINE_BEGIN("handed work");
   handed.work(handed.argument);
+  TIMELINE_END("handed work");
   atomic_store_explicit(&handed_waiting, 0, memory_order_relaxed);
   atomic_store_explicit(&handed_done, 1, memory_order_release);
 }
@@ -344,14 +444,63 @@ static void wait_briefly(void) {
   nanosleep(&pause, 0);
 }
 
+// The commands thread's wait when there's nothing to parse. A timer on Windows comes due
+// about half a millisecond late however short it's set, and a thread handing work over
+// waited that out each time: Mario Sports Mix touches eight held copies a picture, which
+// cost it every other frame. So there the wait also ends when work is handed over.
+#ifdef _WIN32
+static HANDLE idle_wake;
+static void idle_wait(void) {
+  static HANDLE timer;
+  if (!timer) timer = CreateWaitableTimerExW(0, 0, 2 /* high resolution */, TIMER_ALL_ACCESS);
+  LARGE_INTEGER due;
+  due.QuadPart = -(EMPTY_SLEEP_NANOSECONDS / 100);
+  if (!timer || !idle_wake || !SetWaitableTimer(timer, &due, 0, 0, 0, FALSE)) { wait_briefly(); return; }
+  HANDLE either[2] = {idle_wake, timer};
+  WaitForMultipleObjects(2, either, FALSE, INFINITE);
+}
+static void wake_idle(void) { if (idle_wake) SetEvent(idle_wake); }
+#elif defined(__linux__)
+// On Linux a sleep that short comes due 50 to 100 microseconds late as well (the kernel
+// rounds a thread's timers together), and New Super Mario Bros. Wii touches some 25 held
+// copies a picture: its thread waited a quarter of a millisecond for each, 2.6 ms of every
+// frame, which left too little room for a frame with more to do, and one was missed every
+// ten seconds or so. So here too the wait ends at once when work is handed over: the
+// thread sleeps on a word the hander sets and wakes it by (a futex).
+// Commands written to the ring wake it the same way, but only when it is asleep, as the
+// game writes them a few bytes at a time and waking costs a call to the kernel.
+static _Atomic int idle_word, idle_asleep;
+static void idle_wait(void) {
+  struct timespec pause = {0, EMPTY_SLEEP_NANOSECONDS};
+  atomic_store_explicit(&idle_asleep, 1, memory_order_seq_cst);
+  if (!atomic_exchange_explicit(&idle_word, 0, memory_order_seq_cst)) syscall(SYS_futex, &idle_word, FUTEX_WAIT_PRIVATE, 0, &pause, 0, 0);
+  atomic_store_explicit(&idle_asleep, 0, memory_order_seq_cst);
+  atomic_store_explicit(&idle_word, 0, memory_order_release);
+}
+static void wake_idle(void) {
+  atomic_store_explicit(&idle_word, 1, memory_order_seq_cst);
+  if (atomic_load_explicit(&idle_asleep, memory_order_seq_cst)) syscall(SYS_futex, &idle_word, FUTEX_WAKE_PRIVATE, 1, 0, 0, 0);
+}
+#define WAKES_FOR_COMMANDS 1
+#else
+static void idle_wait(void) { wait_briefly(); }
+static void wake_idle(void) {}
+#endif
+
 static void *commands_thread(void *unused) {
   (void)unused;
+  on_commands_thread = 1;
+  stage_sample_thread(1);
+#ifdef __linux__
+  prctl(PR_SET_TIMERSLACK, 1000);  // Short sleeps end when asked, not 50 microseconds later (the kernel's usual rounding).
+#endif
   uint64_t parsed = 0;
   int empty_turns = 0;
   while (1) {
     uint64_t written = atomic_load_explicit(&ring_written, memory_order_acquire);
     uint32_t used = written == parsed ? 0 : parse_one(ring + (parsed & (RING_BYTES - 1)), (uint32_t)(written - parsed));
     run_handed(used != 0);
+    if (gx_backend->show_held) gx_backend->show_held();
     if (used) {
       parsed += used;
       atomic_store_explicit(&ring_parsed, parsed, memory_order_release);
@@ -360,7 +509,7 @@ static void *commands_thread(void *unused) {
       sched_yield();
     } else {
       TIMELINE_BEGIN("no commands");
-      wait_briefly();
+      idle_wait();
       TIMELINE_END("no commands");
     }
   }
@@ -369,6 +518,7 @@ static void *commands_thread(void *unused) {
 
 // Memory with no name in the file system, to map twice. macOS has no memfd_create, so it
 // takes shared memory under a name, and drops the name at once.
+#ifndef _WIN32
 static int ring_file(void) {
 #ifdef __APPLE__
   char name[32];
@@ -380,8 +530,41 @@ static int ring_file(void) {
   return memfd_create("wii-recomp-commands", 0);
 #endif
 }
+#endif
+
+#ifdef _WIN32
+// Windows maps a section twice in a row through placeholders (Windows 10 1803 on): a
+// reservation split in two, each half replaced by a view of the same memory. The calls
+// are looked up at run time, so an older Windows runs the commands on the game's thread.
+typedef PVOID (WINAPI *VirtualAlloc2Call)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef PVOID (WINAPI *MapViewOfFile3Call)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
+#define PLACEHOLDER_RESERVE 0x00040000u   // MEM_RESERVE_PLACEHOLDER
+#define PLACEHOLDER_REPLACE 0x00004000u   // MEM_REPLACE_PLACEHOLDER
+#define PLACEHOLDER_PRESERVE 0x00000002u  // MEM_PRESERVE_PLACEHOLDER
+
+static uint8_t *map_ring_twice(void) {
+  HMODULE kernel = GetModuleHandleA("kernelbase.dll");
+  VirtualAlloc2Call reserve = kernel ? (VirtualAlloc2Call)(void *)GetProcAddress(kernel, "VirtualAlloc2") : 0;
+  MapViewOfFile3Call view = kernel ? (MapViewOfFile3Call)(void *)GetProcAddress(kernel, "MapViewOfFile3") : 0;
+  if (!reserve || !view) return 0;
+  HANDLE section = CreateFileMappingA(INVALID_HANDLE_VALUE, 0, PAGE_READWRITE, 0, RING_BYTES, 0);
+  if (!section) return 0;
+  uint8_t *both = reserve(0, 0, RING_BYTES * 2, MEM_RESERVE | PLACEHOLDER_RESERVE, PAGE_NOACCESS, 0, 0);
+  if (!both || !VirtualFree(both, RING_BYTES, MEM_RELEASE | PLACEHOLDER_PRESERVE)
+      || !view(section, GetCurrentProcess(), both, 0, RING_BYTES, PLACEHOLDER_REPLACE, PAGE_READWRITE, 0, 0)
+      || !view(section, GetCurrentProcess(), both + RING_BYTES, 0, RING_BYTES, PLACEHOLDER_REPLACE, PAGE_READWRITE, 0, 0)) {
+    fprintf(stderr, "graphics: no ring of commands (error %lu), so they run on the game's thread\n", GetLastError());
+    return 0;
+  }
+  return both;
+}
+#endif
 
 static int start_commands_thread(void) {
+#ifdef _WIN32
+  uint8_t *both = map_ring_twice();
+  if (!both) return 0;
+#else
   int file = ring_file();
   if (file < 0 || ftruncate(file, RING_BYTES)) return 0;
   uint8_t *both = mmap(0, RING_BYTES * 2, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -389,10 +572,15 @@ static int start_commands_thread(void) {
       || mmap(both + RING_BYTES, RING_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, file, 0) == MAP_FAILED) {
     return 0;
   }
+#endif
   ring = both;
+#ifdef _WIN32
+  idle_wake = CreateEventW(0, FALSE, FALSE, 0);
+#endif
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);
   pthread_attr_setstacksize(&attributes, 16u * 1024u * 1024u);
+  gx_shows_held = 1;  // The thread shows a held picture between commands.
   return pthread_create(&commands_thread_id, &attributes, commands_thread, 0) == 0;
 }
 
@@ -414,7 +602,10 @@ static void hand_over(void (*work)(void *), void *argument, int soon) {
   handed.soon = soon;
   atomic_store_explicit(&handed_done, 0, memory_order_relaxed);
   atomic_store_explicit(&handed_waiting, 1, memory_order_release);
+  wake_idle();
+  uint64_t waiting_since = time_base();
   while (!atomic_load_explicit(&handed_done, memory_order_acquire)) sched_yield();
+  stage_add(STAGE_HANDED, time_base() - waiting_since);
   atomic_flag_clear_explicit(&handing, memory_order_release);
 }
 
@@ -429,23 +620,14 @@ static void ring_add(const uint8_t *bytes, uint32_t count) {
   uint64_t written = atomic_load_explicit(&ring_written, memory_order_relaxed);
   while (written + count - atomic_load_explicit(&ring_parsed, memory_order_acquire) > RING_BYTES) wait_briefly();
   memcpy(ring + (written & (RING_BYTES - 1)), bytes, count);
+  ring_added += count;
   atomic_store_explicit(&ring_written, written + count, memory_order_release);
+#ifdef WAKES_FOR_COMMANDS
+  wake_idle();
+#endif
 }
 #else
-static int start_commands_thread(void) { return 0; }
-static void lock_graphics(void);
-static void unlock_graphics(void);
-static int may_use_graphics(void);
-
-void gx_run_on_graphics(void (*work)(void *), void *argument) {
-  if (!may_use_graphics()) return;
-  lock_graphics();
-  work(argument);
-  unlock_graphics();
-}
-void gx_run_on_graphics_soon(void (*work)(void *), void *argument) { gx_run_on_graphics(work, argument); }
-int graphics_busy(void) { return 0; }
-static void ring_add(const uint8_t *bytes, uint32_t count) { (void)bytes; (void)count; }
+#error "the commands thread's ring is built for Linux, macOS and Windows"
 #endif
 
 // With no thread of their own, commands run on the game's, which holds this while it
@@ -540,7 +722,10 @@ static void pump(void) {
   uint32_t read = read_pair(CP_FIFO_READ), write = read_pair(CP_FIFO_WRITE);
   uint32_t limit = ring_limit(end);
   if (title->fifo_breakpoints) check_fifo_marks(control, read_pair(CP_FIFO_READ), read_pair(CP_FIFO_WRITE), limit - base);
-  int breaking = title->fifo_breakpoints && (control & CONTROL_BREAK_ENABLE);
+  // A game that turns breakpoints on wants them: honoured whenever the chip runs on the
+  // game's thread (WII_RECOMP_GX_INLINE=1, or no ring), not only in games built to keep
+  // frames apart.
+  int breaking = (title->fifo_breakpoints || threaded == 0) && (control & CONTROL_BREAK_ENABLE);
   uint32_t breakpoint = read_pair(CP_BREAKPOINT);
   if (at_breakpoint || held_at_token || resume_state != RUNNING) return;  // Bursts from the CPU land here too.
   if (threaded < 0) threaded = !title->fifo_breakpoints && !getenv("WII_RECOMP_GX_INLINE") && start_commands_thread();
@@ -591,6 +776,7 @@ static void send_burst(void) {
 }
 
 static void feed_stream(uint32_t value, int bytes) {
+  if (gx_efb_pokes_waiting) gx_efb_send_pokes();
   if (burst_used + (uint32_t)bytes <= BURST_BYTES) {  // As it nearly always does: the value whole, high byte first.
     uint8_t *at = burst + burst_used;
     if (bytes == 4) at[0] = (uint8_t)(value >> 24), at[1] = (uint8_t)(value >> 16), at[2] = (uint8_t)(value >> 8), at[3] = (uint8_t)value;
@@ -614,13 +800,24 @@ static void feed_stream(uint32_t value, int bytes) {
 
 void graphics_pipe_write(uint32_t value, int bytes) { feed_stream(value, bytes); }
 
+// A write to WPAR: the bytes the pipe hadn't sent are dropped, as Dolphin's
+// GPFifoManager::ResetGatherPipe drops them. GXBeginDisplayList does it after pointing the
+// CPU's FIFO at the list, so a partly filled burst from before never lands in the list:
+// with them, a list came out 32 bytes longer than the game had measured it.
+void graphics_pipe_reset(void) { burst_used = 0; }
+
 uint64_t graphics_next_due(void) {
   uint64_t token = atomic_load(&token_due), finish = atomic_load(&finish_due);
   if (token && finish) return token < finish ? token : finish;
   return token ? token : finish;
 }
 
-void graphics_retrace(void) {
+uint64_t gx_field_nanoseconds(void) { return atomic_load(&field_length); }
+
+void graphics_retrace(double field_rate) {
+  if (field_rate > 1) atomic_store(&field_length, (uint64_t)(1e9 / field_rate));
+  atomic_store(&field_began, host_nanoseconds());
+  atomic_fetch_add(&fields_begun, 1);
   if (resume_state == WAITING_FOR_RETRACE) resume_state = RESUME_DUE;
   if (held_at_token && ++retraces_held >= HOLD_RETRACES_AT_MOST) token_seen = 1;
 }
@@ -640,6 +837,7 @@ void graphics_update(void) {
   // The other thread can set either at any moment, so each is taken only if unchanged.
   uint64_t token = atomic_load(&token_due);
   if (token && time_base() >= token && atomic_compare_exchange_strong(&token_due, &token, 0)) {
+    pe_token = atomic_load(&token_parsed);
     raise_pe(PE_TOKEN_DONE, 1, IRQ_PE_TOKEN);
     return;
   }
@@ -653,6 +851,12 @@ void gx_stream_report(void) {
   fprintf(stderr, "stream: %u bytes waiting, control %x, read %x, write %x, cpu write %x:", stream_used,
           hw_peek(CP_CONTROL, 2), read_pair(CP_FIFO_READ), read_pair(CP_FIFO_WRITE), hw_peek(PI_FIFO_WRITE, 4));
   for (uint32_t i = 0; i < 24 && i < stream_used; i++) fprintf(stderr, " %02x", stream[i]);
+  fprintf(stderr, "\n  held: at breakpoint %d, at token %d (seen %d, retraces %d, paces by token %d), resume state %d, threaded %d",
+          at_breakpoint, held_at_token, token_seen, retraces_held, paces_by_token, (int)resume_state, threaded);
+  fprintf(stderr, "\n  %llu bytes handed to the commands thread so far, FIFO %x to %x", (unsigned long long)ring_added,
+          read_pair(CP_FIFO_BASE), read_pair(CP_FIFO_END));
+  fprintf(stderr, "\n  the CPU's write pipe holds %u bytes not yet sent:", burst_used);
+  for (uint32_t i = 0; i < burst_used; i++) fprintf(stderr, " %02x", burst[i]);
   fprintf(stderr, "\n  vertex format %x %x, needs %u for one vertex of format 0\n", gx.cp[0x50], gx.cp[0x60], gx_vertices_size(0, 1));
 }
 
@@ -708,6 +912,13 @@ int graphics_write(uint32_t address, uint32_t value, int bytes) {
     pe_enabled = value & PE_ENABLE_BITS;
     pe_status &= ~(value & (PE_TOKEN_DONE | PE_FINISH_DONE));
     if (value & PE_TOKEN_DONE) clear_irq(IRQ_PE_TOKEN);
+    if ((value & PE_TOKEN_DONE) && !atomic_load(&token_due)) pe_token = atomic_load(&token_parsed);  // Nothing on its way: up to date.
+    // The SDK's handler acknowledges the token's interrupt once it has read the value and
+    // run the game's draw-sync callback. While the chip is held at that token the value
+    // can't have moved on, so the game has seen it. Games that pace frames through the
+    // callback alone (Mario Power Tennis) never read the token otherwise, and would wait
+    // out the hold's last resort, a frame every two seconds.
+    if ((value & PE_TOKEN_DONE) && held_at_token && !atomic_load(&token_due)) token_seen = 1;
     if (value & PE_FINISH_DONE) clear_irq(IRQ_PE_FINISH);
     return 1;
   }

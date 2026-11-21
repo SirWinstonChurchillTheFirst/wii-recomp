@@ -43,16 +43,20 @@ int aes_request(uint32_t command, uint32_t request);
 int sha_request(uint32_t command, uint32_t request);
 void wc24_request_user_id(uint8_t *out);
 int console_setting(const char *name, char *out, size_t limit);  // From setting.txt; 0 if it isn't there.
+void console_settings_make(char region);  // setting.txt for the disc's region letter, unless storage has one.
+int console_settings_raw(uint8_t *out);   // Its 256 bytes as stored, or 0.
 // The disc's ticket, beside the extracted system folder. Returns 0 if there's none.
 
 void files_start(const char *folder);
 void files_save_path(const char *path, char *out, unsigned long size);
 int files_storage_path(const char *path, char *out, unsigned long size);
 void files_make_parents(const char *full);
+void files_remove_tree(const char *full);  // A file or folder in the save folder, and all inside it.
 // Writes a whole host file so a power cut leaves the old one or the new one. 1 if written.
 int files_write_whole(const char *full, const void *data, size_t bytes);
 // A fixed-size value from the console settings (SYSCONF), such as IPL.CB. Its size, or 0.
 int files_system_setting(const char *name, uint8_t *out, size_t limit);
+int files_system_setting_set(const char *name, uint8_t value);  // A byte item, before a game opens the file.
 void files_make_title_folders(uint64_t title);  // Its content and data folders, as launching makes them.
 int files_find(const char *path, char *out, unsigned long size);
 void system_files_make(void);  // What the Wii Menu makes on a new Wii, where storage lacks it.

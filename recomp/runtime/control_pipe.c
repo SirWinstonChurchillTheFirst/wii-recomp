@@ -16,6 +16,7 @@
 
 #include "console.h"
 #include "cpu.h"
+#include "debug.h"
 #include "dsp_record.h"
 #include "gx_inspect.h"
 #include "gx_shot.h"
@@ -42,6 +43,7 @@ static void run_command(const char *line) {
   if (!strncmp(line, "reset", 5)) reset_button_press();
   else if (!strncmp(line, "power", 5)) { if (!power_button_press()) fprintf(stderr, "control: nothing is listening for the power button\n"); }
   else if (!strncmp(line, "dump", 4)) gx_inspect_dump();
+  else if (!strncmp(line, "threads", 7)) debug_threads_now = 1;  // Listed on the game's thread, at its next check.
   else if (sscanf(line, "record-sound %d %1023s", &first, path) == 2) dsp_record_request(first, path);
   else if (sscanf(line, "record %d %1023s", &first, path) == 2) gx_record_request(first, path);
   else if (sscanf(line, "timeline %d %1023s", &first, path) == 2 && first > 0) timeline_request((unsigned)first, path);
@@ -62,9 +64,41 @@ static void *control_loop(void *path) {
   return 0;
 }
 
+#ifdef _WIN32
+#include <windows.h>
+// Windows has no named pipes in the file system, so WII_RECOMP_CONTROL names a pipe
+// there: "wii" is \\.\pipe\wii. One sender at a time; the pipe opens again after each.
+static void *control_pipe_loop(void *name) {
+  char path[300], line[1200];
+  const char *last = strrchr((const char *)name, '/');
+  snprintf(path, sizeof path, "\\\\.\\pipe\\%s", last ? last + 1 : (const char *)name);
+  while (1) {
+    HANDLE pipe = CreateNamedPipeA(path, PIPE_ACCESS_INBOUND, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 0, 4096, 0, 0);
+    if (pipe == INVALID_HANDLE_VALUE) return 0;
+    if (ConnectNamedPipe(pipe, 0) || GetLastError() == ERROR_PIPE_CONNECTED) {
+      size_t length = 0;
+      char byte;
+      DWORD got;
+      while (ReadFile(pipe, &byte, 1, &got, 0) && got == 1) {
+        if (byte == '\r') continue;
+        if (length < sizeof line - 2) line[length++] = byte;
+        if (byte == '\n') { line[length] = 0; run_command(line); length = 0; }
+      }
+      if (length) { line[length++] = '\n'; line[length] = 0; run_command(line); }
+    }
+    CloseHandle(pipe);
+  }
+}
+
+void input_start_control_pipe(const char *path) {
+  static pthread_t thread;
+  pthread_create(&thread, 0, control_pipe_loop, (void *)path);
+}
+#else
 void input_start_control_pipe(const char *path) {
   static pthread_t thread;
   unlink(path);
   mkfifo(path, 0600);
   pthread_create(&thread, 0, control_loop, (void *)path);
 }
+#endif

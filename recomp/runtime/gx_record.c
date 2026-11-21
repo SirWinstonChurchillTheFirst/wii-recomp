@@ -19,20 +19,22 @@
 #include "cpu.h"
 #include "dff.h"
 #include "gx.h"
+#include "hardware.h"
 #include "title.h"
 
 enum {
   FILE_ID = 0x0d01f1f0, FILE_VERSION = 6, LOADER_VERSION = 1, HEADER_BYTES = 128, FRAME_BYTES = 64, UPDATE_BYTES = 24,
-  XF_REGISTERS_START = 0x1000, CHUNK_BYTES = 4096, COMMAND_BP = 0x61, BP_TEV_REGISTER = 0xe0, TEV_KONST_FLAG = 0x800000,
+  XF_REGISTERS_START = 0x1000, CHUNK_BYTES = 4096, CP_FIFO_BASE = 0xcc000020u, CP_FIFO_END = 0xcc000024u, ADDRESS_MASK = 0x1fffffffu, COMMAND_BP = 0x61, BP_TEV_REGISTER = 0xe0, TEV_KONST_FLAG = 0x800000,
 };
 
 typedef struct { uint8_t *bytes; size_t used, size; } Bytes;
 typedef struct { uint32_t position, address; size_t data_at; uint32_t bytes; } Update;
-typedef struct { size_t fifo_at, fifo_bytes; size_t first_update; uint32_t update_count; } Frame;
+typedef struct { size_t fifo_at, fifo_bytes; size_t first_update; uint32_t update_count, ring_start, ring_end; } Frame;
 
 static _Atomic int requested;  // Frames asked for, taken by the chip's side at a frame's end.
 static char requested_path[4096], path[4096];
-static int frames_wanted, frames_done, recording;
+static int frames_wanted, frames_done;
+int gx_recording;  // Read by the parser for every command, so it needn't call in here to learn there is nothing to do.
 static Bytes fifo, data;
 static Update *updates;
 static size_t update_count, update_room;
@@ -91,7 +93,11 @@ static void note_changes(int which, uint32_t start, uint32_t size) {
 static void begin_frame(void) {
   frames = realloc(frames, (size_t)(frames_done + 1) * sizeof *frames);
   if (!frames) { fprintf(stderr, "stop: record: no memory\n"); exit(10); }
-  frames[frames_done] = (Frame){fifo.used, 0, update_count, 0};
+  // Where the game's command ring lies in memory. Dolphin's own player sets its ring up from
+  // these two and reads nothing right with a ring of no size; recomp/tools/replay ignores them.
+  uint32_t ring_start = ((hw_peek(CP_FIFO_BASE + 2, 2) << 16) | hw_peek(CP_FIFO_BASE, 2)) & ADDRESS_MASK;
+  uint32_t ring_end = ((hw_peek(CP_FIFO_END + 2, 2) << 16) | hw_peek(CP_FIFO_END, 2)) & ADDRESS_MASK;
+  frames[frames_done] = (Frame){fifo.used, 0, update_count, 0, ring_start, ring_end};
   memory_taken = 0;
 }
 
@@ -123,7 +129,7 @@ static void start(int count) {
   memcpy(start_xf_registers, &gx.xf[XF_REGISTERS_START], sizeof start_xf_registers);
   memset(start_texture, 0, sizeof start_texture);
   gx_save_palettes(start_texture);
-  recording = 1;
+  gx_recording = 1;
   begin_frame();
   // The stage registers and constants share BP addresses, so the registers alone hold
   // only whichever was written last. Both are put back by commands, that one last.
@@ -150,7 +156,7 @@ static int write_words(FILE *to, uint64_t *at, const uint32_t *words, uint32_t c
 
 // The layout follows Dolphin's FifoDataFile.cpp, as dff.c reads it.
 static void finish(void) {
-  recording = 0;
+  gx_recording = 0;
   FILE *to = fopen(path, "wb");
   if (!to) { fprintf(stderr, "record: can't write %s\n", path); return; }
   uint64_t frame_list = HEADER_BYTES, update_list = frame_list + (uint64_t)frames_done * FRAME_BYTES;
@@ -172,6 +178,7 @@ static void finish(void) {
   for (int i = 0; ok && i < frames_done; i++) {
     uint8_t entry[FRAME_BYTES] = {0};
     put64(entry, fifo_at + frames[i].fifo_at), put32(entry + 8, (uint32_t)frames[i].fifo_bytes);
+    put32(entry + 12, frames[i].ring_start), put32(entry + 16, frames[i].ring_end);
     put64(entry + 20, update_list + (uint64_t)frames[i].first_update * UPDATE_BYTES), put32(entry + 28, frames[i].update_count);
     ok = fwrite(entry, 1, sizeof entry, to) == sizeof entry;
   }
@@ -198,7 +205,7 @@ void gx_record_list_leave(void) { depth--; }
 enum { COMMAND_CALL_LIST = 0x40, COMMAND_DRAW = 0x80 };
 
 void gx_record_command(const uint8_t *bytes, uint32_t count) {
-  if (!recording || depth) return;
+  if (!gx_recording || depth) return;
   if (!memory_taken && (bytes[0] >= COMMAND_DRAW || bytes[0] == COMMAND_CALL_LIST)) take_memory();
   add(&fifo, bytes, count);
 }
@@ -213,7 +220,7 @@ void gx_record_frame_shown(void) {
     if (from_environment) snprintf(requested_path, sizeof requested_path, "%s", asked + used), frames_wanted = count;
   }
   if (from_environment > 0 && --from_environment == 0) atomic_store(&requested, frames_wanted);
-  if (recording) {
+  if (gx_recording) {
     if (!memory_taken) take_memory();
     frames[frames_done].fifo_bytes = fifo.used - frames[frames_done].fifo_at;
     if (++frames_done == frames_wanted) finish();

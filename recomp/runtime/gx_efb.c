@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "debug.h"
 #include "gaps.h"
 #include "gx_backend.h"
 #include "gx_encode.h"
@@ -34,10 +35,11 @@ static int drawn;  // Anything since the last picture was shown.
 void gx_efb_changed(void) { changes++, drawn = 1; }
 void gx_efb_shown(void) { changes++, drawn = 0; }
 
-typedef struct { int depth, x, y; uint32_t value; } Access;
+typedef struct { int depth, x, y, width; uint32_t value; } Access;  // width: pixels poked along the row.
 
 static void peek_work(void *argument) {
   Access *access = argument;
+  gx_settings_written++;  // The backend may leave its draw state to read: the next draw sets it all again.
   int kind = access->depth;
   GxRectangle *area = &held[kind].area;
   int inside = held[kind].seen == changes && access->x >= area->x && access->y >= area->y && access->x < area->x + area->width
@@ -78,6 +80,7 @@ static void peek_work(void *argument) {
 // channels alone, which Dolphin doesn't follow either, so those are named.
 static void poke_work(void *argument) {
   Access *access = argument;
+  gx_settings_written++;  // As for a peek.
   if (access->depth) {
     uint32_t z = hw_peek(PE_Z_CONFIG, 2);
     if (((z >> Z_COMPARE_BIT) & 1 && ((z >> Z_FUNCTION_SHIFT) & 7) != Z_ALWAYS) || !((z >> Z_UPDATE_BIT) & 1)) gap_hit("gx.pe_z_alpha_destination_alpha_config", z);
@@ -91,7 +94,8 @@ static void poke_work(void *argument) {
     gap_hit("pixel.efb_poke_cpu_writes", 0x100u | (unsigned)access->depth);
     return;
   }
-  gx_backend->poke(access->depth, access->x, access->y, gx_poke_color_value(access->value), (float)gx_poke_depth_value(access->value));
+  int width = access->x + access->width <= EFB_WIDTH ? access->width : EFB_WIDTH - access->x;
+  gx_backend->poke(access->depth, access->x, access->y, width, gx_poke_color_value(access->value), (float)gx_poke_depth_value(access->value));
   gx_efb_changed();
 }
 
@@ -112,22 +116,46 @@ static int decode(uint32_t address, int bytes, int writing, Access *access) {
 
 int gx_efb_read(uint32_t address, int bytes, uint32_t *value) {
   Access access;
+  gx_efb_send_pokes();
   int found = decode(address, bytes, 0, &access);
   if (!found) return 0;
   *value = 0;
   if (found < 0 || !gx_draw_started()) return 1;
+  stage_note(NOTE_PEEK);
   gx_run_on_graphics(peek_work, &access);
   // A narrower read takes the word's low bytes, as Dolphin's hardware reads do.
   *value = bytes == 4 ? access.value : bytes == 2 ? access.value & 0xffff : access.value & 0xff;
   return 1;
 }
 
+// Pokes of one value side by side along a row go to the backend together, as one run:
+// Mario Strikers Charged fills its whole picture a pixel at a time for a loading screen,
+// and a trip to the graphics thread for each of those 287,000 pixels took minutes. A run
+// waits only until the processor does anything else with the hardware.
+static Access run;
+int gx_efb_pokes_waiting;
+
+void gx_efb_send_pokes(void) {
+  if (!gx_efb_pokes_waiting) return;
+  gx_efb_pokes_waiting = 0;
+  Access sending = run;
+  stage_note(NOTE_POKE);
+  gx_run_on_graphics(poke_work, &sending);
+}
+
 int gx_efb_write(uint32_t address, uint32_t value, int bytes) {
   Access access;
   int found = decode(address, bytes, 1, &access);
   if (found <= 0 || !gx_draw_started()) return found != 0;
+  if (gx_efb_pokes_waiting && run.depth == access.depth && run.y == access.y && run.value == value && run.x + run.width == access.x) {
+    run.width++;
+    return 1;
+  }
+  gx_efb_send_pokes();
   access.value = value;
-  gx_run_on_graphics(poke_work, &access);
+  access.width = 1;
+  run = access;
+  gx_efb_pokes_waiting = 1;
   return 1;
 }
 
@@ -179,6 +207,7 @@ static void box_work(void *argument) {
 
 int gx_bounding_box_read(uint32_t address, uint32_t *value) {
   if (address < PE_BOX_FIRST || address >= PE_BOX_END) return 0;
+  stage_note(NOTE_BOX);
   gx_run_on_graphics(box_work, 0);
   *value = (uint32_t)box[(address - PE_BOX_FIRST) / 2] & 0xffff;
   return 1;

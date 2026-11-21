@@ -1,14 +1,17 @@
 // The Vulkan backend. Its images count rows from the top as the game does, so the
 // picture is stored the right way up and copies aren't turned over. Shaders still
 // see OpenGL's clip space, as the viewport's height is negative.
+#define _GNU_SOURCE  // For the clock a held picture is timed by.
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gx_vulkan.h"
+#include "debug.h"
 #include "timeline.h"
 
 #define EFB_PIXEL_WIDTH (EFB_WIDTH * EFB_SCALE)
@@ -777,10 +780,12 @@ static VkRect2D clip_to_efb(const GxRectangle *area) {
   int right = (area->x + area->width) * EFB_SCALE, bottom = (area->y + area->height) * EFB_SCALE;
   if (left < 0) left = 0;
   if (top < 0) top = 0;
+  if (right < 0) right = 0;
+  if (bottom < 0) bottom = 0;
   if (right > EFB_PIXEL_WIDTH) right = EFB_PIXEL_WIDTH;
   if (bottom > EFB_PIXEL_HEIGHT) bottom = EFB_PIXEL_HEIGHT;
-  if (right < left) right = left;
-  if (bottom < top) bottom = top;
+  if (left > right) left = right;  // A rectangle wholly past the picture ends up empty at its edge, not outside it.
+  if (top > bottom) top = bottom;
   return (VkRect2D){{left, top}, {(uint32_t)(right - left), (uint32_t)(bottom - top)}};
 }
 
@@ -1168,8 +1173,28 @@ static int join_strip(int32_t first, int count) {
   return 1;
 }
 
+// Mario & Sonic at the Olympic Winter Games draws a slope as 21,000 strips a frame, most of
+// four vertices, nearly all with nothing set between them, and on a small processor the
+// checks below cost each of them more than its triangles. A strip that follows one that
+// went the whole way and joined the run, with nothing handed over since but its vertices
+// (gx_draw_unchanged) and nothing recorded since (the run is still open, and everything
+// that records sends the run first), would find every check as the last did. So it joins
+// the run at once. What a draw does for itself each time is still done: depth's changes
+// are counted, and a part of the pass or an early read that has come due is made the usual way.
+static int strip_repeats;  // The last draw joined the run, in the picture, with no layer at work and no bounds of its own.
+
 static void draw(int primitive, int count) {
   if (!count) return;
+  if (gx_draw_unchanged && strip_repeats && run.open && primitive == PRIM_STRIP && !blocks_waiting && restarts == reserved_restarts
+      && !(kick_draws > 0 && draws_since_submit >= (unsigned)kick_draws) && !early_read_due()) {
+    if (state_in_use.depth_write) depth_changed(), flat_depth.known = 0, early_depth_changed();
+    if (join_strip((int32_t)(reserved_at / reserved_stride), count)) {
+      recorded_draws++;
+      draws_since_submit++;
+      return;
+    }
+  }
+  strip_repeats = 0;
   if (state_in_use.depth_write) depth_changed();
   {
     // In the strip, a pass should touch only the small pictures being made, and those
@@ -1261,7 +1286,10 @@ static void draw(int primitive, int count) {
   int32_t first = (int32_t)(reserved_at / reserved_stride);
   recorded_draws++;
   draws_since_submit++;
-  if (primitive == PRIM_STRIP && join_strip(first, count)) return;
+  if (primitive == PRIM_STRIP && join_strip(first, count)) {
+    strip_repeats = !in_strip && !gx_bounds_known && empty_layer.step == LAYER_IDLE && viewport_wanted.y + viewport_wanted.height < VISIBLE_HEIGHT * EFB_SCALE;
+    return;
+  }
   flush_run();
   if (primitive == PRIM_TRIANGLES) {
     vkCmdDraw(commands, (uint32_t)count, 1, (uint32_t)first, 0);
@@ -1638,7 +1666,61 @@ static void hand_picture_over(Frame *frame) {
   vk_picture_sink(picture_ring.mapped, (int)picture_size.width, (int)picture_size.height);
 }
 
+// A Wii shows a finished picture when the screen next starts a field, so a game whose
+// frames take turns being long and short (Mario Sports Mix: 10 ms, then 3) still shows
+// one every field. Shown as each is finished, they came 9 and 24 ms apart, which a
+// screen faster than the game's 60 Hz shows as judder. So a picture finished less than a
+// field after the last one was shown is held until that field is over: the commands
+// thread shows it (show_held) while it goes on with the next frame's work. A picture that
+// comes later is shown at once, as is one whose window changed. A picture finished while
+// one is still held isn't shown, as the screen wouldn't have shown both either (Mario &
+// Sonic at the Olympic Winter Games draws some menus as fast as it can, hundreds a second),
+// unless the held one is about due, which is then shown first.
+// WII_RECOMP_SHOW_AT_ONCE=1 shows each as it's finished, as before.
+static struct { int waiting; uint32_t image; uint64_t due; } held_show;
+static uint64_t last_shown;
+static int shown_outdated;
+
+static void show_now(uint64_t when) {
+  if (!held_show.waiting) return;
+  held_show.waiting = 0;
+  VkPresentInfoKHR info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &vk.swap_done[held_show.image],
+                           .swapchainCount = 1, .pSwapchains = &vk.swapchain, .pImageIndices = &held_show.image};
+  TIMELINE_BEGIN("to the display");
+  VkResult presented = vkQueuePresentKHR(vk.queue, &info);
+  TIMELINE_END("to the display");
+  shown_outdated |= presented == VK_SUBOPTIMAL_KHR || presented == VK_ERROR_OUT_OF_DATE_KHR;
+  last_shown = when ? when : host_nanoseconds();
+  stage_shown();
+}
+
+static void show_held(void) {
+  // Counted from when it was due, not when this got round to it, so lateness doesn't add up.
+  if (held_show.waiting && host_nanoseconds() >= held_show.due) show_now(held_show.due);
+}
+
+static void show_or_hold(uint32_t image, int at_once) {
+  static int off = -1;
+  if (off < 0) off = getenv("WII_RECOMP_SHOW_AT_ONCE") != 0;
+  uint64_t field = gx_field_nanoseconds(), now = host_nanoseconds();
+  held_show.waiting = 1;
+  held_show.image = image;
+  held_show.due = last_shown + field;
+  if (off || at_once || !gx_shows_held || !last_shown || held_show.due <= now) show_now(0);
+}
+
 static void present(const GxRectangle *from) {
+  int unshown = 0;
+  if (held_show.waiting) {
+    // The held picture goes first if it's due within half a field: the next one has come
+    // about a field after it, as it should. Pictures come a field apart by the game's count
+    // of fields and are shown a field apart by this clock, and when the two were a few
+    // milliseconds out of step every second or third picture was dropped as "too soon"
+    // (Mario & Sonic at the Olympic Winter Games' menus: pictures 30 ms apart).
+    uint64_t half_field = gx_field_nanoseconds() / 2;
+    if (held_show.due > host_nanoseconds() + half_field) unshown = 1;
+    else show_now(held_show.due);
+  }
   flush_run();  // Strips gathered so far go first.
   record_reads();
   give_up_layer();
@@ -1666,7 +1748,9 @@ static void present(const GxRectangle *from) {
     mark("to window", 0, 0);
     goto shown;
   }
-  VkResult acquired = vk.swapchain ? vkAcquireNextImageKHR(vk.device, vk.swapchain, ACQUIRE_TIMEOUT_NS, frame->image_ready, VK_NULL_HANDLE, &image_index) : VK_NOT_READY;
+  TIMELINE_BEGIN("window picture");
+  VkResult acquired = vk.swapchain && !unshown ? vkAcquireNextImageKHR(vk.device, vk.swapchain, ACQUIRE_TIMEOUT_NS, frame->image_ready, VK_NULL_HANDLE, &image_index) : VK_NOT_READY;
+  TIMELINE_END("window picture");
   int showing = acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR;
   outdated = acquired == VK_SUBOPTIMAL_KHR || acquired == VK_ERROR_OUT_OF_DATE_KHR;
   if (showing) {
@@ -1674,10 +1758,9 @@ static void present(const GxRectangle *from) {
     blit_to_window(frame->draw, image_index, from);
     mark("to window", 0, 0);
     vk_frame_submit(frame, frame->image_ready, vk.swap_done[image_index]);
-    VkPresentInfoKHR info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &vk.swap_done[image_index],
-                             .swapchainCount = 1, .pSwapchains = &vk.swapchain, .pImageIndices = &image_index};
-    VkResult presented = vkQueuePresentKHR(vk.queue, &info);
-    outdated |= presented == VK_SUBOPTIMAL_KHR || presented == VK_ERROR_OUT_OF_DATE_KHR;
+    show_or_hold(image_index, outdated || !vk_swapchain_matches_window());
+    outdated |= shown_outdated;
+    shown_outdated = 0;
   } else {
     vk_frame_submit(frame, VK_NULL_HANDLE, VK_NULL_HANDLE);
   }
@@ -1685,8 +1768,11 @@ shown:
   mark_report();
   if (vk_picture_sink) hand_picture_over(frame);
   if (vk.swapchain) {
+    TIMELINE_BEGIN("window size");
     window_refresh_size();
-    if (outdated || !vk_swapchain_matches_window()) vk_create_swapchain();
+    TIMELINE_END("window size");
+    // Not under a held picture: the next one sees to it.
+    if (!held_show.waiting && (outdated || !vk_swapchain_matches_window())) vk_create_swapchain();
   }
   begin_frame(&vk.frames[(frame - vk.frames + 1) % FRAMES_IN_FLIGHT]);
 }
@@ -2385,11 +2471,11 @@ static const void *read_finish(unsigned ticket, int *width, int *height) {
   return reads[slot].on_processor ? reads[slot].processor : reads[slot].ring.mapped;
 }
 
-// A poke sets the game's pixel, as many of the picture's as cover it, from staging memory.
-static void poke(int depth, int x, int y, uint32_t rgba, float depth_value) {
+// A poke sets the game's pixels, as many of the picture's as cover them, from staging memory.
+static void poke(int depth, int x, int y, int pixels, uint32_t rgba, float depth_value) {
   flush_run();  // Strips gathered so far go first.
   ready_to_read();
-  int left = x * EFB_SCALE, top = y * EFB_SCALE, width = (x + 1) * EFB_SCALE - left, height = (y + 1) * EFB_SCALE - top;
+  int left = x * EFB_SCALE, top = y * EFB_SCALE, width = (x + pixels) * EFB_SCALE - left, height = (y + 1) * EFB_SCALE - top;
   VkDeviceSize bytes = (VkDeviceSize)width * (VkDeviceSize)height * BYTES_PER_PIXEL;
   VkDeviceSize at = vk_ring_take(&vk.frame->staging, bytes, BYTES_PER_PIXEL);
   if (at == (VkDeviceSize)-1) {
@@ -2471,6 +2557,7 @@ const GxBackend gx_backend_vulkan = {
   .copy_color = copy_color,
   .copy_depth = copy_depth,
   .present = present,
+  .show_held = show_held,
   .read_texture = read_texture,
   .read_picture = read_picture,
   .expect_read = expect_read,

@@ -41,11 +41,9 @@ class Folder(unittest.TestCase):
 
 
 class Tiers(Folder):
-    def test_fast_tier_covers_the_share_of_runs_most_run_first(self):
-        counts = {0x10: 900, 0x20: 90, 0x30: 9, 0x40: 1}
-        self.assertEqual(emit.choose_fast(counts, share=0.9), {0x10})
-        self.assertEqual(emit.choose_fast(counts, share=0.99), {0x10, 0x20})
-        self.assertEqual(emit.choose_fast(counts, share=1.0), {0x10, 0x20, 0x30, 0x40})
+    def test_fast_tier_is_every_function_that_ran(self):
+        counts = {0x10: 900, 0x20: 90, 0x30: 9, 0x40: 1, 0x50: 0}
+        self.assertEqual(emit.choose_fast(counts), {0x10, 0x20, 0x30, 0x40})
         self.assertEqual(emit.choose_fast({}), set())
 
     def test_profile_skips_its_header_and_adds_repeats(self):
@@ -88,7 +86,7 @@ class Tiers(Folder):
         self.assertEqual(len(outputs[0]), 6)  # Three groups, each with both tiers.
         self.assertEqual(outputs[0], outputs[1])
 
-    def test_only_the_quick_tier_is_built_quickly(self):
+    def test_both_tiers_are_built_for_speed(self):
         build = HERE.parent / "recomp" / f"build-test-{os.getpid()}"
         self.addCleanup(shutil.rmtree, build, ignore_errors=True)
         (build / "generated").mkdir(parents=True)
@@ -99,7 +97,7 @@ class Tiers(Folder):
         rules = (build / "build.ninja").read_text()
         flags = {line.split(": cc generated/")[1]: following.split()[2]
                  for line, following in zip(rules.splitlines(), rules.splitlines()[1:]) if ": cc generated/" in line}
-        self.assertEqual(flags, {"cold0000.c": "-O0", "part0000.c": "-O2", "table.c": "-O2"})
+        self.assertEqual(flags, {"cold0000.c": "-O2", "part0000.c": "-O2", "table.c": "-O2"})
 
 
 @unittest.skipUnless(shutil.which("clang"), "needs clang")

@@ -309,6 +309,7 @@ static uint32_t dtv_status(void) {
 
 uint32_t hw_read(uint32_t address, int bytes) {
   uint32_t value;
+  if (gx_efb_pokes_waiting) gx_efb_send_pokes();
   if (gx_efb_read(address, bytes, &value)) return value;  // The picture's own memory: EFB peeks.
   value = get(address, bytes);
   if (address == PI_CAUSE) value = interrupt_cause();
@@ -331,6 +332,7 @@ void hw_write(uint32_t address, uint32_t value, int bytes) {
     return;
   }
   if (gx_efb_write(address, value, bytes)) return;
+  if (gx_efb_pokes_waiting) gx_efb_send_pokes();
   note_unmodelled(address, WRITES, first_touch("write", address, value));
   if (address == PI_CAUSE) {
     cause &= ~value;

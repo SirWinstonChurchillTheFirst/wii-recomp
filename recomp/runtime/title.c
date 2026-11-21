@@ -1,9 +1,23 @@
 // Loads a title's native code. The console is one program; each title's translated code
 // is a library beside it or inside its disc image, and it only runs on the console it
 // was built for, with the program it was translated from.
-#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#undef interface
+#define RTLD_NOW 0
+#define RTLD_LOCAL 0
+static void *dlopen(const char *path, int mode) { (void)mode; return LoadLibraryA(path); }
+static void *dlsym(void *library, const char *name) { return (void *)GetProcAddress(library, name); }
+static const char *dlerror(void) {
+  static char text[64];
+  snprintf(text, sizeof text, "Windows error %lu", GetLastError());
+  return text;
+}
+#else
+#include <dlfcn.h>
+#endif
 
 #include "title.h"
 

@@ -249,4 +249,21 @@ void system_files_make(void) {
     }
     free(data);
   }
+  // A formatted Wii always has /tmp, where the NAND library builds a file (in /tmp/sys)
+  // before moving it into place. Without it no game can make its first save. IOS empties it
+  // as it starts (Dolphin's FileSystem::Init does too), so what a game left there half
+  // written when the power went is gone, rather than read as a damaged file system.
+  // Never with the file system's root as the save folder: that /tmp is the computer's.
+  char full[MAX_PATH];
+  files_save_path("", full, sizeof full);
+  size_t length = strlen(full);
+  while (length && full[length - 1] == '/') length--;
+  if (!length) {
+    fprintf(stderr, "storage: the save folder is the file system's root, so its /tmp is left alone\n");
+    return;
+  }
+  files_save_path("/tmp", full, sizeof full);
+  files_remove_tree(full);
+  files_save_path("/tmp/.", full, sizeof full);
+  files_make_parents(full);
 }

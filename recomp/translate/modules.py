@@ -101,12 +101,79 @@ def yaz0_decompress(data):
     return bytes(out)
 
 
+def lh_table(data, at, bits):
+    """One of LH's two Huffman trees: a count of four-byte groups, then `bits`-bit entries
+    packed from the high bit down. Returns the entries (entry 0 isn't used) and where the
+    tree ends."""
+    if bits > 8:
+        groups, start = data[at] | data[at + 1] << 8, at + 2
+    else:
+        groups, start = data[at], at + 1
+    end = at + (groups + 1) * 4
+    packed = int.from_bytes(data[start:end], "big")
+    total = (end - start) * 8
+    count = min(total // bits, 2 << bits)
+    mask = (1 << bits) - 1
+    return [0] + [packed >> (total - bits * (n + 1)) & mask for n in range(count)], end
+
+
+def lh_decompress(data):
+    """Nintendo's LZ with Huffman codes, type 0x40 (Mario Sports Mix's .cmp files), after
+    Treeki's LHDecompressor. Returns None for anything that doesn't read as one."""
+    if len(data) < 12 or data[0] != 0x40:
+        return None
+    size, at = data[1] | data[2] << 8 | data[3] << 16, 4
+    if size == 0:
+        size, at = struct.unpack_from("<I", data, 4)[0], 8
+    if size > 64 << 20:
+        return None
+    try:
+        lengths, at = lh_table(data, at, 9)
+        distances, at = lh_table(data, at, 5)
+        place = at * 8  # The next bit of the stream, counted from the file's start, high bits first.
+
+        def symbol(tree, leaf, reach):
+            nonlocal place
+            node = 1
+            while True:
+                entry = tree[node]
+                bit = data[place >> 3] >> (7 - (place & 7)) & 1
+                place += 1
+                following = (node & ~1) + ((entry & reach) + 1) * 2 + bit
+                if entry & (leaf >> bit):
+                    return tree[following]
+                node = following
+
+        out = bytearray()
+        while len(out) < size:
+            value = symbol(lengths, 0x100, 0x7f)
+            if value < 0x100:
+                out.append(value)
+                continue
+            length = (value & 0xff) + 3
+            width = symbol(distances, 0x10, 7)
+            distance = 1 if width else 0
+            for _ in range(width - 1):
+                distance = distance << 1 | (data[place >> 3] >> (7 - (place & 7)) & 1)
+                place += 1
+            distance += 1
+            if distance > len(out):
+                return None
+            for _ in range(min(length, size - len(out))):
+                out.append(out[-distance])
+        return bytes(out)
+    except (IndexError, struct.error, ValueError):
+        return None
+
+
 def decompress(data):
     """The plain bytes of a file stored with any of the compressions modules are found in."""
     if data[:4] == b"Yaz0":
         return yaz0_decompress(data)
     if data[:1] in (b"\x10", b"\x11"):
         return lz_decompress(data) or data
+    if data[:1] == b"@":
+        return lh_decompress(data) or data
     return data
 
 
@@ -205,7 +272,7 @@ def parse_rel(name, data):
     its own sections, 0 for the program at fixed addresses, and any other number for
     another REL. Each list steers through the module with R_DOLPHIN_SECTION (start of a
     section) and offsets from the entry before. Relocations into other RELs are kept in
-    `external`, by module number, for the translator to turn down.
+    `external`, with (module number, section) as the symbol.
     """
     if len(data) < 0x40:
         return None
@@ -304,6 +371,11 @@ class Prepared:
     relocated_words: set      # code offsets the linker writes, left out of the identity check
     check: int                # FNV-1a 64 over every other code word
     fixed_calls: dict = field(default_factory=dict)  # import number -> the program address it calls
+    # A REL's branches into other RELs: import number -> the code offset of the branch. The
+    # game's linker points each at the other module once that is loaded, and back at the
+    # module's own _unresolved when it goes, so the target is read from the branch itself
+    # each time it's taken, as the processor does.
+    linked_calls: dict = field(default_factory=dict)
 
 
 def fnv64(words):
@@ -326,7 +398,8 @@ def patch_branch(code, at, address, target, name):
     struct.pack_into(">I", code, at, (word & 0xfc000003) | (distance & 0x3fffffc))
 
 
-def prepare(module, base, import_base):
+def prepare(module, base, import_base, extra_starts=()):
+    """`extra_starts` are code offsets other modules branch or point to."""
     section = module.code_section()
     start, size = module.sections[section]
     if import_base < base + size:  # Each branch checks it can reach them.
@@ -364,14 +437,13 @@ def prepare(module, base, import_base):
         else:
             raise Unsupported(f"{module.name}: relocation type {reloc.kind} in code isn't handled")
 
-    if module.kind == "rel" and module.external:
-        others = sorted({r.symbol[0] for r in module.external})
-        raise Unsupported(f"{module.name}: links against other modules ({', '.join(map(str, others))}), not handled yet")
-    pending_ha, pending_lo = {}, {}
-    for reloc in module.external:
+    starts.update(base + offset for offset in extra_starts if 0 <= offset < size)
+    pending_ha, pending_lo, used = {}, {}, set()
+    for reloc in module.external if module.kind != "rel" else ():
         at = reloc.offset - start
         if not 0 <= at < size:
-            raise Unsupported(f"{module.name}: an import is used outside the code at {reloc.offset:#x}")
+            continue  # In the module's data, such as a method table: read at run time, like any other data.
+        used.add(reloc.symbol)
         relocated.add(at & ~3)
         if reloc.kind == REL24:
             patch_branch(code, at, base + at, import_base + reloc.symbol * 4, module.name)
@@ -386,7 +458,23 @@ def prepare(module, base, import_base):
         if symbol not in import_sites and (symbol, addend) in pending_lo:
             import_sites[symbol] = ("pair", high & ~3, pending_lo[(symbol, addend)] & ~3, addend)
     fixed_calls = prepare_fixed(module, base, import_base, code, start, size, import_sites, relocated)
-    missing = [module.imports[i] for i in {r.symbol for r in module.external} if i not in import_sites]
+    linked_calls = {}
+    for reloc in module.external if module.kind == "rel" else ():
+        at = reloc.offset - start
+        if not 0 <= at < size:
+            continue  # In the module's data: read at run time, like any other data.
+        relocated.add(at & ~3)
+        if reloc.kind == REL24:
+            number = len(module.imports) + len(fixed_calls) + len(linked_calls)
+            linked_calls[number] = at
+            patch_branch(code, at, base + at, import_base + number * 4, module.name)
+        elif reloc.kind in halves:
+            # Whichever half it is, the linker works it out: the instruction's own
+            # immediate is read when it runs.
+            fields[base + (at & ~3)] = ("linked", None, None, at & ~3)
+        else:
+            raise Unsupported(f"{module.name}: relocation type {reloc.kind} against another module isn't handled")
+    missing = [module.imports[i] for i in used if i not in import_sites]
     if missing:
         raise Unsupported(f"{module.name}: no way to read where these imports went: {', '.join(missing)}")
 
@@ -396,7 +484,7 @@ def prepare(module, base, import_base):
     original = struct.unpack(f">{size // 4}I", module.data[start:start + (size & ~3)])
     check = fnv64(word for index, word in enumerate(original) if index * 4 not in relocated)
     return Prepared(module, section, base, bytes(code), import_base, fields, starts, import_sites, relocated, check,
-                    fixed_calls)
+                    fixed_calls, linked_calls)
 
 
 def prepare_fixed(module, base, import_base, code, start, size, import_sites, relocated):

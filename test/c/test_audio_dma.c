@@ -71,21 +71,33 @@ int main(void) {
   wait_blocks(4);
   CHECK_EQ(interrupts, 3);
   CHECK_EQ(blocks_left(), 1);  // Two blocks, the second now playing.
-  // A game that falls behind: it hasn't answered the interrupt that just came, so the
-  // new pass waits rather than playing the old buffer again, and the time is let go.
+  // A game held up for a moment: it hasn't answered the interrupt that just came, so the
+  // new pass waits rather than playing the old buffer again. It answers within the time
+  // it is given, and the blocks that fell due meanwhile are made up, each pass with its interrupt.
   unanswered = 1;
   uint32_t played_before = written;
-  wait_blocks(200);
+  wait_blocks(100);
   CHECK_EQ(written, played_before);  // Nothing more played, nothing repeated.
   CHECK_EQ(interrupts, 3);
-  unanswered = 0;  // Answered: on it goes, from now.
+  unanswered = 0;  // Answered: the hundred are made up, and on it goes.
   wait_blocks(2);
-  CHECK_EQ(written, played_before + 16);
-  CHECK_EQ(interrupts, 4);
+  CHECK_EQ(written, played_before + 102 * 8);
+  CHECK_EQ(interrupts, 3 + 51);
+  // A game that falls behind for longer than that: the time is let go, and only what fell
+  // due since then is made up (200 blocks unanswered, 160 allowed, so 161 let go and 39 kept).
+  unanswered = 1;
+  played_before = written;
+  wait_blocks(200);
+  CHECK_EQ(written, played_before);
+  CHECK_EQ(interrupts, 3 + 51);
+  unanswered = 0;
+  wait_blocks(2);
+  CHECK_EQ(written, played_before + 41 * 8);
+  CHECK_EQ(interrupts, 3 + 51 + 20);
   // Off: silence, and no more interrupts. A long wait is let go rather than made up.
   audio_dma_write(CONTROL, 0, 2);
   wait_blocks(3000);
-  CHECK_EQ(interrupts, 4);
+  CHECK_EQ(interrupts, 3 + 51 + 20);
   now_ticks += 60750000ull;  // A second with no checks, as a slow step would leave.
   audio_update(now_ticks);
   CHECK_EQ(gaps, 0);

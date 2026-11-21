@@ -6,6 +6,7 @@
 #include "gx_backend.h"
 
 const GxBackend *gx_backend;
+int gx_shows_held;
 
 // The first one here is the default: the first in build_file.py's list, which is Vulkan
 // unless asked otherwise. OpenGL stays as a fallback for machines with no working Vulkan,

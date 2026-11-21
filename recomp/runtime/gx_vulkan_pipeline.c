@@ -184,8 +184,9 @@ static void *read_whole(const char *name, size_t *bytes) {
   return data;
 }
 
-// Written beside, then renamed over, so a reader never sees half a file.
-static void save_driver_cache(void) {
+// Written beside, then renamed over, so a reader never sees half a file. Every few seconds,
+// at exit and at the console's power-off, which ends the program without exit handlers.
+void gx_vulkan_save_cache(void) {
   pthread_mutex_lock(&save_lock);
   if (cache_folder[0] && __atomic_exchange_n(&driver_changed, 0, __ATOMIC_ACQ_REL)) {
     size_t bytes = 0;
@@ -210,7 +211,7 @@ static void *keep_saving(void *unused) {
   (void)unused;
   for (;;) {
     sleep(SAVE_EVERY_SECONDS);
-    save_driver_cache();
+    gx_vulkan_save_cache();
   }
   return 0;
 }
@@ -224,7 +225,7 @@ static void open_cache(void) {
     return;
   }
   snprintf(cache_folder, sizeof cache_folder, "%s", folder);
-  atexit(save_driver_cache);
+  atexit(gx_vulkan_save_cache);
   pthread_t saver;
   pthread_create(&saver, 0, keep_saving, 0);
   pthread_detach(saver);
@@ -473,7 +474,22 @@ void vk_stages_prepare(int count, const int *kinds, const char *const *texts) {
 // Nothing is built until a pipeline needs it, as only then is the rest of the state known.
 // Each attribute read, in the order of its location, follows the last; neighbours in a
 // Vertex that stay neighbours are copied as one run.
+// Pipelines for the start are built on several threads at once (build_many), and each asks
+// here. Two that needed the same new layout both filled the same slot, one clearing it
+// while the other's pipeline read it: an attribute with no format, which the Radeon driver
+// divides by, so about one start in fifty ended with a divide error before the first
+// picture. One at a time now; a layout is whole before anyone else can find it.
+static pthread_mutex_t layout_lock = PTHREAD_MUTEX_INITIALIZER;
+static const Layout *layout_made(uint32_t stage);
+
 static const Layout *layout_of(uint32_t stage) {
+  pthread_mutex_lock(&layout_lock);
+  const Layout *layout = layout_made(stage);
+  pthread_mutex_unlock(&layout_lock);
+  return layout;
+}
+
+static const Layout *layout_made(uint32_t stage) {
   Stage *s = &stages[stage];
   if (s->layout >= 0) return &layouts[s->layout];
   for (int i = 0; i < layout_count; i++) {

@@ -55,6 +55,23 @@ int gx_transform_depths(const Vertex *vertices, int count, float *low, float *hi
 int gx_fog_none_between(double low, double high);
 // Where a vertex lands, over w as in gl_Position, and whether it is in front of the camera.
 int gx_transform_screen(const Vertex *vertex, float *x, float *y);
+// The same, with the vertex's depth from 0 to 1 before the viewport's depth range, as point[2].
+int gx_transform_point(const Vertex *vertex, float point[3]);
+// Z-freeze (GEN_MODE bit 19): while it is on, every pixel takes its depth from the plane of
+// the last triangle drawn before it was turned on, not from its own triangle. Games lay a
+// shadow or a mark flat on the ground that way, so it neither sinks into the ground nor
+// flickers against it. The plane is kept as depth = [2] + [0] * x + [1] * y, with x and y
+// in pixels of the picture buffer as the card has it and depth as the buffer stores it;
+// it is worked out on the processor from each filled shape's last three vertices, as
+// Dolphin's VertexManagerBase::CalculateZSlope does (CREDITS.md).
+// The plane is only kept once a game has frozen depth, as working it out for every draw cost
+// a game that never does 2 % of its graphics thread (Mario & Sonic at the Olympic Winter
+// Games' Downhill). So the very first frozen draw of a run has none, and is named.
+extern float gx_frozen_plane[3];
+extern int gx_frozen_plane_known, gx_frozen_plane_wanted;
+// How long a field of the screen lasts, in nanoseconds, as the video interface had it when
+// the last one began: 1/60 s before the first. Safe on any thread (gx_fifo.c).
+uint64_t gx_field_nanoseconds(void);
 // Lines (1) or points (2) are being drawn as quads, each corner moved by this much over w.
 extern int gx_expanding;
 extern float gx_expand_size[2];
@@ -76,6 +93,7 @@ int gx_read_vertices(const uint8_t *data, int format, int count, Vertex *out);
 typedef struct { uint32_t address, bytes; uint64_t watched; const uint8_t *start; } GxCalledList;
 extern GxCalledList gx_called_list;
 int gx_read_list_vertices(const uint8_t *data, int format, int count, Vertex *out);
+int gx_lists_kept(void);
 extern unsigned gx_list_draws_reused, gx_list_draws_decoded;
 // How many normals the current vertices carry: 0, 1, or 3 with binormal and tangent.
 int gx_vertex_normals(int format);
@@ -106,12 +124,15 @@ void gx_xf_note(uint32_t address, uint32_t count);
 // Decodes the texture a map points at, or returns 0 if it has none, or if it is what the
 // memo says it was.
 DecodedTexture gx_decode_texture(int map, TextureMemo *memo);
+uint64_t gx_palette_identity(uint32_t image, uint32_t palette);  // Which colors a paletted image has now; 0 for others.
+void gx_palette_peek(uint32_t slot, uint16_t *out, int count);  // A palette's first entries, for the draw inspector.
 void gx_load_palette(void);
 void gx_restore_palettes(const uint8_t *texture_memory);
 void gx_save_palettes(uint8_t *texture_memory);
 
 // Recording frames for recomp/tools/replay (gx_record.c).
 void gx_record_request(int frames, const char *path);
+extern int gx_recording;
 void gx_record_command(const uint8_t *bytes, uint32_t count);
 void gx_record_frame_shown(void);
 void gx_record_list_enter(void);
@@ -160,12 +181,14 @@ typedef struct {
 // What a shader reads at run time. The layout matches the PixelValues block.
 typedef struct {
   float registers[4][4], constants[4][4];
-  float alpha_settings[4];  // First and second alpha reference, the constant output alpha, then the depth bias.
+  float alpha_settings[4];  // First and second alpha reference, the constant output alpha, then the depth bias,
+                            // or with frozen depth the plane's depth at the picture's corner.
   float indirect_row_s[TEV_INDIRECT_MATRICES][4], indirect_row_t[TEV_INDIRECT_MATRICES][4];
   float map_size[MAX_TEXTURE_MAPS][4];  // Each map's width and height, then each coordinate's scale.
   float map_bias[MAX_TEXTURE_MAPS / 4][4];
   float fog_color[4], fog_settings[4];  // Color in 255ths, then A, C, B's magnitude and B's shift.
-  float fog_range_center[4];  // The picture column at the center and the viewport's half width.
+  float fog_range_center[4];  // The picture column at the center and the viewport's half width, then with
+                              // frozen depth the plane's slope across and down, per pixel.
   float fog_range_k[3][4];  // Ten values from the edge in to the center.
 } TevValues;
 
@@ -251,6 +274,9 @@ void gx_copy_frame_shown(void);
 // EFB peeks, pokes and the bounding box (gx_efb.c), for hardware.c.
 int gx_efb_read(uint32_t address, int bytes, uint32_t *value);
 int gx_efb_write(uint32_t address, uint32_t value, int bytes);
+// Pokes gathered into a run reach the picture: before anything else the processor does with the hardware.
+extern int gx_efb_pokes_waiting;
+void gx_efb_send_pokes(void);
 void gx_efb_changed(void);
 void gx_efb_shown(void);  // A picture was shown: changed, with nothing drawn since.
 int gx_screen_copy_went_to(uint32_t address);  // A recent copy to the screen went there.

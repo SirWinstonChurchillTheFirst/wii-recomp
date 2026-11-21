@@ -1,5 +1,6 @@
 // The files the Wii Menu makes on a new Wii. argv: storage folder (holding only the
 // WiiConnect24 settings), save folder (empty).
+#include <string.h>
 #include "harness.h"
 #include "ios.h"
 #include "title.h"
@@ -127,9 +128,30 @@ int main(int count, char **arguments) {
     }
   }
   CHECK_EQ(found, 4);
+  // setting.txt for the disc's region, where storage has none of its own (wc24.c): games
+  // check AREA, GAME and VIDEO against the disc. Only a European console has the 60 Hz
+  // choice, which a game from elsewhere would ask for and its VIConfigure refuse.
+  char value[16];
+  uint8_t sixty = 9;
+  console_settings_make('P');
+  CHECK(console_setting("AREA", value, sizeof value) && !strcmp(value, "EUR"));
+  CHECK(console_setting("VIDEO", value, sizeof value) && !strcmp(value, "PAL"));
+  CHECK(console_setting("GAME", value, sizeof value) && !strcmp(value, "EU"));
+  CHECK(files_system_setting("IPL.E60", &sixty, 1) == 1 && sixty == 1);
+  CHECK_EQ(load(saves, "/title/00000001/00000002/data/setting.txt"), 0x100);
+  CHECK(memcmp(data, "AREA=", 5));  // Kept scrambled, as a Wii keeps it.
+  console_settings_make('E');
+  CHECK(console_setting("AREA", value, sizeof value) && !strcmp(value, "USA"));
+  CHECK(console_setting("VIDEO", value, sizeof value) && !strcmp(value, "NTSC"));
+  CHECK(files_system_setting("IPL.E60", &sixty, 1) == 1 && sixty == 0);
+  console_settings_make('J');
+  CHECK(console_setting("AREA", value, sizeof value) && !strcmp(value, "JPN"));
+
   // A game opening them finds the console's remotes listed.
   CHECK(files_open("/shared2/sys/SYSCONF", 1) >= 0);
   CHECK_EQ(registered_bytes, 0x4000);
+  CHECK_EQ(files_system_setting_set("IPL.E60", 1), 0);  // Not behind the back of a game that has it open.
+  CHECK(files_system_setting("IPL.E60", &sixty, 1) == 1 && sixty == 0);
 
   // A file the game has since changed is kept on the next start.
   char full[1024];
@@ -139,5 +161,6 @@ int main(int count, char **arguments) {
   fclose(file);
   system_files_make();
   CHECK_EQ(load(saves, "/shared2/wc24/nwc24fl.bin"), 7);
+
   return finish();
 }

@@ -29,7 +29,12 @@
 #define BUSY_SLEEP_TICKS (TIME_BASE_HZ / 10000)  // 100 microseconds.
 #define WII_EPOCH_UNIX 946684800ll  // 2000-01-01, when the Wii's time base reads zero.
 
+#ifdef _WIN32
+// At a fixed address on Windows (cpu.h), so it's given its first value as the program loads.
+__attribute__((constructor(102))) static void budget_start(void) { interrupt_budget = CHECK_EVERY; }
+#else
 int interrupt_budget = CHECK_EVERY;
+#endif
 
 static uint64_t decrementer_deadline;
 static int decrementer_armed;
@@ -64,9 +69,16 @@ uint64_t wii_ticks_at(int64_t unix_seconds, long utc_offset_seconds) {
 // A fixed offset, set once, keeps every interval and deadline exactly as it was.
 void time_start(void) {
   time_t now = time(0);
+#ifdef _WIN32
+  struct tm local;
+  localtime_s(&local, &now);
+  long utc_offset = (long)(_mkgmtime(&local) - now);  // Local time read as UTC is ahead by the offset.
+  time_base_offset = wii_ticks_at(now, utc_offset) - monotonic_ticks();
+#else
   struct tm local;
   localtime_r(&now, &local);
   time_base_offset = wii_ticks_at(now, local.tm_gmtoff) - monotonic_ticks();
+#endif
 }
 
 uint64_t time_base(void) { return monotonic_ticks() + time_base_offset; }
@@ -88,8 +100,21 @@ void decrementer_set(uint32_t value) {
 
 uint32_t decrementer_get(void) { return (uint32_t)(decrementer_deadline - time_base()); }
 
+// One waiting, or a timer that ran out while interrupts were off, is taken right here, as
+// the processor takes it the moment mtmsr turns them on. Mario & Sonic at the London 2012
+// Olympic Games keeps two threads waking each other, with interrupts off nearly all the
+// time and on only between two instructions: an interrupt left for the next check found
+// them off again, and the frames that waited on it came every other retrace, at 30 fps.
+static int something_due(void) { return irq_pending() || (decrementer_armed && time_base() >= decrementer_deadline); }
+
 void interrupts_turned_on(void) {
-  if (irq_pending()) interrupt_budget = 0;
+  if (something_due()) poll_interrupts();
+}
+
+// The same for a context loaded with interrupts on (threads.c), which is still on the old
+// thread's host stack: taken at the next check, which is on the new one.
+void interrupts_turned_on_soon(void) {
+  if (something_due()) interrupt_budget = 0;
 }
 
 static unsigned long long interrupts_taken, interrupt_polls, interrupt_polls_masked;

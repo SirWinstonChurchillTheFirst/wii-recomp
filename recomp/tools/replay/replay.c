@@ -5,13 +5,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <zlib.h>
 
 #include "cpu.h"
+#include "debug.h"
 #include "dff.h"
 #include "gx_backend.h"
+#include "gx_inspect.h"
 #include "gx_vulkan.h"
 
 enum {
@@ -99,6 +102,7 @@ static void load_registers(const Dff *dff) {
     if (bp_is_state(reg)) write_bp(reg, dff->bp[reg]);
   }
   memcpy(gx.cp, dff->cp, sizeof gx.cp);
+  gx_cp_written++, gx_settings_written++;  // What was worked out from the registers is out of date.
   memcpy(gx.xf, dff->xf, sizeof dff->xf);
   memcpy(&gx.xf[XF_REGISTERS_START], dff->xf_registers, sizeof dff->xf_registers);
   gx_xf_note(0, XF_SIZE);
@@ -121,6 +125,7 @@ static double memory_ms;  // Time spent putting recorded memory in, which isn't 
 
 static void write_memory(const DffUpdate *update) {
   double began = now_ms();
+  stage_samples_paused = 1;
   uint32_t physical = update->address & PHYSICAL_MASK;
   uint8_t *base = mem1;
   uint64_t size = MEM1_SIZE;
@@ -134,6 +139,7 @@ static void write_memory(const DffUpdate *update) {
     exit(EXIT_STOP);
   }
   memcpy(base + physical, update->data, update->bytes);
+  stage_samples_paused = 0;
   memory_ms += now_ms() - began;
 }
 
@@ -193,6 +199,7 @@ static void run_actions(void) {
   for (int i = 0; i < action_count; i++) {
     if (actions[i].kind == 'w') {
       gx_efb_write(actions[i].address, actions[i].value, 4);
+      gx_efb_send_pokes();  // Each stands alone here: nothing else follows to send it.
     } else if (actions[i].kind == 'b') {
       uint32_t value[4] = {0, 0, 0, 0};
       for (int side = 0; side < 4; side++) gx_bounding_box_read(0xcc001010u + (uint32_t)side * 2, &value[side]);
@@ -252,8 +259,17 @@ int main(int argc, char **argv) {
   clear_whole_picture(dff);
 
   uint32_t frames = dff->frame_count < limit ? dff->frame_count : limit, saved = 0, no_copy = 0, several = 0;
+  // For finding which draw paints what, as the control pipe's "dump" and "skip" do in a game:
+  // REPLAY_DUMP=<frame> writes that frame's draws to the file WII_RECOMP_GX_INSPECT names
+  // (the dump covers the frame after the one it is asked in), REPLAY_SKIP=<first>-<last>
+  // leaves a range of every frame's draws out.
+  const char *dump_text = getenv("REPLAY_DUMP"), *skip_text = getenv("REPLAY_SKIP");
+  long dump_frame = dump_text ? strtol(dump_text, 0, 10) : -1;
+  int skip_first = 0, skip_last = 0;
+  if (skip_text && sscanf(skip_text, "%d-%d", &skip_first, &skip_last) == 2) gx_inspect_skip(skip_first, skip_last);
   for (uint32_t i = 0; i < frames; i++) {
     pictures_in_frame = 0;
+    if ((long)i + 1 == dump_frame) gx_inspect_dump();
     play_frame(&dff->frames[i]);
     if (pictures_in_frame > 1) several++;
     if (!pictures_in_frame) no_copy++;
@@ -274,19 +290,28 @@ int main(int argc, char **argv) {
   double slowest = 0, total = 0, working = 0;
   uint32_t timed = 0;
   vk_picture_sink = 0;
+  stage_sample_thread(1);  // WII_RECOMP_SLOW_SAMPLES=graphics: where the timed frames' time goes (debug.h).
   for (uint32_t turn = 1; turn < repeats; turn++) {
     load_registers(dff);
     for (uint32_t i = 0; i < frames; i++) {
       double began = now_ms(), began_working = clock_ms(CLOCK_THREAD_CPUTIME_ID), memory_before = memory_ms;
       play_frame(&dff->frames[i]);
       double took = now_ms() - began - (memory_ms - memory_before);
+      double worked = clock_ms(CLOCK_THREAD_CPUTIME_ID) - began_working - (memory_ms - memory_before);
+      stage_frame(0);  // After the frame is timed, so its own bookkeeping isn't counted.
       if (i == 0) continue;
       total += took, timed++;
-      working += clock_ms(CLOCK_THREAD_CPUTIME_ID) - began_working - (memory_ms - memory_before);
+      working += worked;
       if (took > slowest) slowest = took;
     }
   }
   // Working time leaves out waiting for the graphics chip.
+  {
+    struct rusage used;
+    getrusage(RUSAGE_SELF, &used);
+    fprintf(stderr, "whole run: %.2f s in the program, %.2f s in the kernel, %ld small page faults\n", used.ru_utime.tv_sec + used.ru_utime.tv_usec / 1e6,
+            used.ru_stime.tv_sec + used.ru_stime.tv_usec / 1e6, used.ru_minflt);
+  }
   if (timed) {
     printf("timed %u frames: %.2f ms each on average, %.2f ms at most, %.2f ms of it working, first frames of each turn and putting memory in left out\n",
            timed, total / timed, slowest, working / timed);

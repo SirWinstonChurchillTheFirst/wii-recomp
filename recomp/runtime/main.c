@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "audio.h"
 #include "dsp.h"
@@ -17,6 +20,7 @@
 #include "input.h"
 #include "pads.h"
 #include "cpu.h"
+#include "debug.h"
 #include "dispatch.h"
 #include "drive.h"
 #include "gx.h"
@@ -27,9 +31,36 @@
 #include "title.h"
 #include "net.h"
 
+#ifndef _WIN32
 Cpu cpu;
+#endif
 
 #define STACK_BYTES (1024u * 1024u * 1024u)
+
+// PC builds are compiled for x86-64-v3 (build_file.py): AVX2, FMA and BMI, which Intel's
+// Haswell, AMD's Zen and later have. On an older processor the first such instruction would
+// end the program with no word of why, and a .wrd image carries the code built on another
+// computer. So this looks first, before anything built that way runs, and is built for the
+// plain x86-64 baseline itself.
+#if defined(__x86_64__) && !defined(__APPLE__)
+#include <cpuid.h>
+__attribute__((constructor(101), target("arch=x86-64"))) static void check_processor(void) {
+  unsigned a, b, c, d, low, high;
+  int avx = 0, fma = 0, avx2 = 0, bmi = 0;
+  if (__get_cpuid(1, &a, &b, &c, &d)) {
+    fma = (c >> 12) & 1;
+    if (((c >> 27) & 1) && ((c >> 28) & 1)) {  // The system saves AVX registers, and there are some.
+      __asm__("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
+      avx = (low & 6) == 6;
+    }
+  }
+  if (__get_cpuid_count(7, 0, &a, &b, &c, &d)) avx2 = (b >> 5) & 1, bmi = ((b >> 3) & 1) && ((b >> 8) & 1);
+  if (avx && avx2 && fma && bmi) return;
+  fprintf(stderr, "stop: this build needs a processor with AVX2, FMA and BMI (Intel Haswell, AMD Zen or later); this one lacks%s%s%s%s\n",
+          avx ? "" : " AVX", avx2 ? "" : " AVX2", fma ? "" : " FMA", bmi ? "" : " BMI");
+  exit(1);
+}
+#endif
 
 static void print_guest_text(uint32_t address) {
   for (int i = 0; i < 400; i++) {
@@ -45,7 +76,8 @@ void guest_panic(void) {
   print_guest_text(cpu.r[3]);
   fprintf(stderr, " line %u: ", cpu.r[4]);
   print_guest_text(cpu.r[5]);
-  fprintf(stderr, " (called from %08x)\n", cpu.lr);
+  // The message is a printf format; its first values are here for whoever reads the log.
+  fprintf(stderr, " (called from %08x; values %x %x %x)\n", cpu.lr, cpu.r[6], cpu.r[7], cpu.r[8]);
   exit(7);
 }
 
@@ -65,6 +97,12 @@ static void *run(void *unused) {
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);  // A frame can't wait for the system's other work.
 #endif
   (void)unused;
+#ifdef __linux__
+  // The game's thread sleeps a tenth of a millisecond at a time while it waits for the
+  // graphics; the kernel's usual rounding added half as much again to each.
+  prctl(PR_SET_TIMERSLACK, 1000);
+#endif
+  stage_sample_thread(0);
   fill_code_slots();
   uint32_t entry = load_program(&boot);
   set_up_low_memory(&boot);
@@ -76,6 +114,8 @@ static void *run(void *unused) {
 
 #ifdef __APPLE__
 #define LIBRARY_SUFFIX "dylib"
+#elif defined(_WIN32)
+#define LIBRARY_SUFFIX "dll"
 #else
 #define LIBRARY_SUFFIX "so"
 #endif
@@ -160,6 +200,10 @@ int main(int count, char **arguments) {
                     "       wii-recomp --console <console folder> [--boot-disc | --title <high>-<low>]\n");
     return 1;
   }
+#ifdef _WIN32
+  setenv("WII_RECOMP_SHOP_SERVER", "off", 0);  // No network on Windows yet: net_win.c.
+  setvbuf(stderr, 0, _IONBF, 0);
+#endif
   console_remember(arguments);
   net_remember_program(arguments[0]);
   if (!strcmp(arguments[1], "--console")) {
@@ -186,6 +230,7 @@ int main(int count, char **arguments) {
   audio_start();
   files_start(count > 2 ? arguments[2] : count == 2 ? default_storage() : 0);
   system_files_make();
+  console_settings_make((char)boot.header[3]);
   files_make_title_folders((uint64_t)title->title_high << 32 | title->title_low);
   pthread_attr_t attributes;
   pthread_attr_init(&attributes);

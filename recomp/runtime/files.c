@@ -47,7 +47,10 @@ static const char *storage, *saves;
 
 void files_start(const char *folder) {
   storage = folder;
-  saves = getenv("WII_RECOMP_SAVES") ? getenv("WII_RECOMP_SAVES") : "recomp/build/saves";
+  // Empty counts as unset: every save path is this folder's name and a Wii path after it,
+  // so "" would put the console's files in the computer's own /shared2, /tmp and so on.
+  const char *chosen = getenv("WII_RECOMP_SAVES");
+  saves = chosen && *chosen ? chosen : "recomp/build/saves";
 }
 
 void files_save_path(const char *path, char *out, unsigned long size) { snprintf(out, size, "%s%s", saves, path); }
@@ -147,6 +150,36 @@ int files_system_setting(const char *name, uint8_t *out, size_t limit) {
     if (!size || size > limit || at + 1 + length + size > bytes || memcmp(data + at + 1, name, length)) continue;
     memcpy(out, data + at + 1 + length, size);
     return (int)size;
+  }
+  return 0;
+}
+
+// Changes a one-byte item of the system settings file in the save folder, before a game
+// has opened it. 1 if the item is there and now holds the value. 0 once a game has the
+// file open: its copy is what files_system_setting reads, and would be written back over
+// this.
+int files_system_setting_set(const char *name, uint8_t value) {
+  char full[MAX_PATH];
+  uint8_t data[0x4000];
+  size_t bytes = 0, length = strlen(name);
+  if (open_contents(SETTINGS_FILE) || !files_find(SETTINGS_FILE, full, sizeof full)) return 0;
+  FILE *file = fopen(full, "rb");
+  if (file) {
+    bytes = fread(data, 1, sizeof data, file);
+    fclose(file);
+  }
+  if (bytes < 6) return 0;
+  unsigned count = (unsigned)data[4] << 8 | data[5];
+  for (unsigned i = 0; i < count && 8 + 2 * i <= bytes; i++) {
+    size_t at = (size_t)data[6 + 2 * i] << 8 | data[7 + 2 * i];
+    if (at >= bytes || (size_t)(data[at] & 0x1f) + 1 != length || at + 2 + length > bytes) continue;
+    if ((data[at] >> 5) != 3 && (data[at] >> 5) != 7) continue;  // A byte or a bool.
+    if (memcmp(data + at + 1, name, length)) continue;
+    if (data[at + 1 + length] == value) return 1;
+    data[at + 1 + length] = value;
+    files_save_path(SETTINGS_FILE, full, sizeof full);
+    files_make_parents(full);
+    return files_write_whole(full, data, bytes);
   }
   return 0;
 }

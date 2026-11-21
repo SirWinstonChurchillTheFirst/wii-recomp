@@ -17,6 +17,7 @@ enum {
 };
 
 static uint8_t palette_memory[PALETTE_BYTES];
+static unsigned palette_loads = 1;  // Counts loads, so a palette's hash is worked out once per load.
 static uint8_t *pixels;
 static uint32_t pixels_size;
 
@@ -25,11 +26,15 @@ void gx_load_palette(void) {
   uint32_t offset = (load & 0x3ff) << PALETTE_SLOT_SHIFT, bytes = ((load >> 10) & 0x7ff) * 32;
   uint8_t *from = host(source);
   if (from && offset + bytes <= PALETTE_BYTES) memcpy(palette_memory + offset, from, bytes);
+  palette_loads++;
 }
 
 // Fills palette memory from a copy of the chip's texture memory, as a recording holds.
 // Dolphin keeps palettes in the first half of it, at the same places as here.
-void gx_restore_palettes(const uint8_t *texture_memory) { memcpy(palette_memory, texture_memory, PALETTE_BYTES); }
+void gx_restore_palettes(const uint8_t *texture_memory) {
+  memcpy(palette_memory, texture_memory, PALETTE_BYTES);
+  palette_loads++;
+}
 void gx_save_palettes(uint8_t *texture_memory) { memcpy(texture_memory, palette_memory, PALETTE_BYTES); }
 
 static void put(uint8_t *to, int r, int g, int b, int a) {
@@ -62,13 +67,18 @@ static void cmpr_tile(const uint8_t *s, uint8_t *out, uint32_t x, uint32_t y, ui
   uint8_t colors[4][4];
   rgb565(c0, colors[0]);
   rgb565(c1, colors[1]);
+  // As Dolphin's DecodeDXTBlock (TextureDecoder_Common.cpp) has it from the chip: the two
+  // colors between are 5/8 and 3/8 mixes, not thirds, and a see-through pixel keeps the
+  // average color, where a PC's DXT1 makes it black. Games count on that color: Mario Power
+  // Tennis reads the "Versus" lettering's color beside where it reads its shape, and black
+  // there painted most of the gold letters black.
   for (int i = 0; i < 3; i++) {
     if (c0 > c1) {
-      colors[2][i] = (uint8_t)((2 * colors[0][i] + colors[1][i]) / 3);
-      colors[3][i] = (uint8_t)((colors[0][i] + 2 * colors[1][i]) / 3);
+      colors[2][i] = (uint8_t)((colors[1][i] * 3 + colors[0][i] * 5) >> 3);
+      colors[3][i] = (uint8_t)((colors[0][i] * 3 + colors[1][i] * 5) >> 3);
     } else {
       colors[2][i] = (uint8_t)((colors[0][i] + colors[1][i]) / 2);
-      colors[3][i] = 0;
+      colors[3][i] = colors[2][i];
     }
   }
   colors[2][3] = 255;
@@ -187,6 +197,27 @@ static uint64_t hash_texture_bytes(uint32_t address, const uint8_t *source, uint
   return memo->bytes_hash = hash_bytes(source, bytes);
 }
 
+// The colors a paletted image would be drawn with now, as a number that tells one set from
+// another, and 0 for an image with colors of its own. A game can draw one image several
+// times a frame with a new palette loaded to the same place each time (Mario Super
+// Sluggers' menus), so the colors are part of which texture a draw means.
+uint64_t gx_palette_identity(uint32_t image, uint32_t palette) {
+  int format = (int)((image >> 20) & 15);
+  if (format != FORMAT_C4 && format != FORMAT_C8 && format != FORMAT_C14X2) return 0;
+  enum { KEPT = 8 };
+  static struct { unsigned loads; uint32_t palette; int format; uint64_t identity; } kept[KEPT];
+  static unsigned next;
+  for (int i = 0; i < KEPT; i++) {
+    if (kept[i].loads == palette_loads && kept[i].palette == palette && kept[i].format == format) return kept[i].identity;
+  }
+  uint32_t offset = (palette & 0x3ff) << PALETTE_SLOT_SHIFT;
+  uint32_t colors = format == FORMAT_C4 ? 16 : format == FORMAT_C8 ? 256 : PALETTE_INDEX_14 + 1;
+  uint32_t bytes = colors * 2 > PALETTE_BYTES - offset ? PALETTE_BYTES - offset : colors * 2;
+  uint64_t identity = (hash_bytes(palette_memory + offset, bytes) * 3 + (uint64_t)((palette >> 10) & 3)) | 1;
+  kept[next++ % KEPT] = (typeof(kept[0])){palette_loads, palette, format, identity};
+  return identity;
+}
+
 DecodedTexture gx_decode_texture(int map, TextureMemo *memo) {
   DecodedTexture texture = {0, 0, 0};
   uint32_t image = gx.bp[(map < 4 ? BP_IMAGE_LOW + map : BP_IMAGE_HIGH + map - 4)];
@@ -210,11 +241,7 @@ DecodedTexture gx_decode_texture(int map, TextureMemo *memo) {
   uint32_t palette_offset = (palette & 0x3ff) << PALETTE_SLOT_SHIFT;
   uint64_t identity = hash_texture_bytes((address << 5) | 0x80000000u, source, bytes, memo) ^ ((uint64_t)image << 20) ^ ((uint64_t)address << 40) ^ palette_offset ^ ((uint64_t)levels << 60);
   // The same image can be drawn with new colors, so the palette is part of what it is.
-  if (format == FORMAT_C4 || format == FORMAT_C8 || format == FORMAT_C14X2) {
-    uint32_t colors = format == FORMAT_C4 ? 16 : format == FORMAT_C8 ? 256 : PALETTE_INDEX_14 + 1;
-    uint32_t palette_bytes = colors * 2 > PALETTE_BYTES - palette_offset ? PALETTE_BYTES - palette_offset : colors * 2;
-    identity ^= hash_bytes(palette_memory + palette_offset, palette_bytes) * 3 + (uint64_t)((palette >> 10) & 3);
-  }
+  identity ^= gx_palette_identity(image, palette);
   if (memo && memo->key == identity) return texture;
   if (memo) memo->key = identity;
   if (pixel_count * RGBA_BYTES > pixels_size) {
@@ -234,4 +261,12 @@ DecodedTexture gx_decode_texture(int map, TextureMemo *memo) {
   texture.levels = levels;
   texture.rgba = pixels;
   return texture;
+}
+
+// For gx_inspect: the first entries of the palette at a slot, big-endian 16-bit words.
+void gx_palette_peek(uint32_t slot, uint16_t *out, int count) {
+  for (int i = 0; i < count; i++) {
+    const uint8_t *p = palette_memory + (((slot & 0x3ff) << PALETTE_SLOT_SHIFT) + (uint32_t)i * 2) % PALETTE_BYTES;
+    out[i] = (uint16_t)(p[0] << 8 | p[1]);
+  }
 }

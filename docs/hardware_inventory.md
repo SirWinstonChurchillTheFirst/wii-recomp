@@ -406,7 +406,7 @@ Dolphin lists 223 instruction handlers in `Interpreter_Tables.cpp`. Every one is
 | `pixel.z_compare_functions` | Z compare functions | done | `runtime/gx_draw.c:120-122` |  |
 | `pixel.z_write_enable` | Z write enable | done | `runtime/gx_draw.c:122` |  |
 | `pixel.z_compare_location_early_z` | Z compare location (early z) | done | `runtime/gx_tev.c:325-375`, `runtime/gx_vulkan_pipeline.c:30` | With early z, depth is stored where the alpha test fails, and depth textures are ignored. OpenGL can't, and reports it. |
-| `pixel.z_freeze` | Z-freeze | on demand | `runtime/gx_fifo.c:102-106` | Needs the last triangle's depth worked out on the CPU and a per-pixel depth path. Reported when turned on. |
+| `pixel.z_freeze` | Z-freeze | partial | `runtime/gx_draw.c` (`note_depth_plane`), `runtime/gx_tev.c` (`read_depth`) | On Vulkan, each pixel takes its depth from the plane of the last triangle drawn before it was turned on, worked out on the CPU as Dolphin does. Reported for a run's first frozen draws (the plane is only kept once a game has frozen depth), together with a depth texture, which isn't followed, and on OpenGL, which counts rows the other way and draws with each triangle's own depth. Seen in Mario Power Tennis and Mario Strikers Charged. |
 | `pixel.z_texture_off_add_replace` | Z texture off, add, replace | done | `runtime/gx_tev.c:168-176`, `:343-354` |  |
 | `pixel.z_texture_z8_z16_z24` | Z texture Z8, Z16, Z24 | done | `runtime/gx_tev.c:347-350` |  |
 | `pixel.z16_precision_formats` | Z16 precision formats | on demand | `runtime/gx_fifo.c:108` | Depth is kept at the host's full precision, as Dolphin keeps it. Reported when chosen. |
@@ -516,7 +516,7 @@ Dolphin lists 223 instruction handlers in `Interpreter_Tables.cpp`. Every one is
 | `vtx.i4_i8_ia4_ia8` | I4, I8, IA4, IA8 | done | `runtime/gx_texture.c:98-105` |  |
 | `vtx.rgb565_rgb5a3_rgba8` | RGB565, RGB5A3, RGBA8 | done | `runtime/gx_texture.c:106-110` |  |
 | `vtx.c4_c8_c14x2` | C4, C8, C14X2 | partial | `runtime/gx_texture.c:111-117` | Decoders right, palette offset wrong. |
-| `vtx.cmpr` | CMPR | done | `runtime/gx_texture.c:52-75` | Blend weights differ slightly from hardware. |
+| `vtx.cmpr` | CMPR | done | `runtime/gx_texture.c:64-93` | Blend weights and the color of see-through pixels as Dolphin's `DecodeDXTBlock` has them. |
 | `vtx.tlut_formats_ia8_rgb565_rgb5a3` | TLUT formats IA8, RGB565, RGB5A3 | done | `runtime/gx_texture.c:43-49` |  |
 | `vtx.tlut_load` | TLUT load | partial | `runtime/gx_texture.c:20-25` | Offset unit. |
 | `vtx.wrap_clamp_repeat_mirror` | Wrap clamp, repeat, mirror | done | `runtime/gx_draw.c:67` |  |
@@ -619,6 +619,8 @@ Registers with no entry below are kept in a plain array (`hardware.c:39`), so re
 | `hw.control_busy_bit` | Control busy bit | done | `runtime/exi.c` | Transfers finish at once. |
 | `hw.status_dma_address_length_immediate_data` | Status, DMA address, length, immediate data | done | `runtime/exi.c` | Immediate and DMA transfers, both directions. Devices other than the clock chip are empty. |
 | `hw.exi_interrupt` | EXI interrupt | done | `runtime/exi.c` | Transfer done, EXI and insert interrupts, each behind its mask. |
+| `hw.ipl_rom_fonts` | Boot ROM fonts (channel 0) | done | `runtime/exi.c` | Dolphin's free western and Japanese fonts, at 0x1fcf00 and 0x1aff00, for OSInitFont. |
+| `hw.ipl_rom_code` | Boot ROM code (channel 0) | missing | `runtime/exi.c` | Reads below the fonts answer zeros and are reported. |
 | `hw.rtc_and_sram_channel_0` | RTC and SRAM (channel 0) | done | `runtime/exi.c` | The clock is local time since 2000, as the time base, less the settings' counter bias (`IPL.CB`), as in Dolphin: a Wii adds the bias, so the Wii Menu shows the computer's time whatever its date setting stored. The game can move it. SRAM holds a new Wii's settings with correct checksums. |
 | `hw.gc_memory_card` | GC memory card | on demand |  | GameCube titles only. |
 | `hw.microphone` | Microphone | on demand |  | A handful of titles. |
@@ -760,7 +762,8 @@ The game's program is recognised by a checksum of its code, as Dolphin does, and
 | `ios.inquiry_0x12` | Inquiry 0x12 | partial | `runtime/dvd.c:119` | Zeros with success. |
 | `ios.reset_spin_up_cover_interrupts` | Reset, spin-up, cover interrupts | done | `runtime/dvd.c:150-152` | Nothing to do. |
 | `ios.unencryptedread_0x8d` | UnencryptedRead 0x8D | done | `runtime/dvd.c:80`, `:110` | Reads the raw area, made region-free. |
-| `ios.getlength_seek_readdvd` | GetLength, Seek, ReadDvd | missing | `runtime/dvd.c:123` | Answered with an error. |
+| `ios.readdiskbca_0xda` | ReadDiskBca 0xDA | partial | `runtime/dvd.c` | The answer Dolphin gives when an image has no BCA: zeros and a 1 at 0x33. |
+| `ios.getlength_seek_readdvd` | GetLength, Seek, ReadDvd | partial | `runtime/dvd.c` | Seek succeeds with a disc in, as Dolphin's DVDLowSeek does: an image reads as fast anywhere. GetLength and ReadDvd are answered with an error. |
 | `ios.error_reporting` | Error reporting | partial | `runtime/dvd.c:13`, `:106` | No medium when the drive is empty, otherwise 0. |
 
 ### Devices

@@ -516,7 +516,7 @@ def bodies_of(assembler, start):
 
 def generate_programs():
     """Returns (C for each program, C for the program table)."""
-    code, rows, tables = [], [], []
+    code, rows = [], []
     for index, (name, build, compare_polls) in enumerate(programs()):
         start = 0x80200000 + index * 0x1000
         assembler = Assembler(start)

@@ -129,6 +129,8 @@ static void remove_tree(const char *full) {
   rmdir(full);
 }
 
+void files_remove_tree(const char *full) { remove_tree(full); }
+
 static int erase(const char *path) {
   char full[MAX_PATH], found[MAX_PATH];
   if (!files_find(path, found, sizeof found)) return NOT_FOUND;

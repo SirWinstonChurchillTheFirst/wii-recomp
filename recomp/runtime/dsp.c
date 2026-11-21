@@ -406,11 +406,11 @@ uint32_t dsp_control_write(uint32_t value) {
 int dsp_read(uint32_t address, int bytes, uint32_t *value) {
   if (address < MAILBOX_TO_DSP || address >= MAILBOX_FROM_DSP + 4) return 0;
   if (interpreting) {
-    int cpu = address < MAILBOX_FROM_DSP, high = (address & 2) == 0;
+    int cpu_side = address < MAILBOX_FROM_DSP, high = (address & 2) == 0;
     if (high) interpret(time_base(), MAIL_SLICE);
-    if (dsp_recording && (bytes == 4 || !high)) dsp_record_read_low(cpu, dsp_lle_mailbox_peek(cpu));
-    if (bytes == 4) *value = (uint32_t)dsp_lle_mailbox_read_high(cpu) << 16 | dsp_lle_mailbox_read_low(cpu);
-    else *value = high ? dsp_lle_mailbox_read_high(cpu) : dsp_lle_mailbox_read_low(cpu);
+    if (dsp_recording && (bytes == 4 || !high)) dsp_record_read_low(cpu_side, dsp_lle_mailbox_peek(cpu_side));
+    if (bytes == 4) *value = (uint32_t)dsp_lle_mailbox_read_high(cpu_side) << 16 | dsp_lle_mailbox_read_low(cpu_side);
+    else *value = high ? dsp_lle_mailbox_read_high(cpu_side) : dsp_lle_mailbox_read_low(cpu_side);
     return 1;
   }
   uint32_t mail = address < MAILBOX_FROM_DSP ? to_dsp : 0;

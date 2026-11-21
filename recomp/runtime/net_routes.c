@@ -71,8 +71,9 @@ static void server_address(struct sockaddr_in *out) {
   inet_pton(AF_INET, host_part, &out->sin_addr);
 }
 
-static void stop_server(void) {
+void net_stop_local_server(void) {
   if (server > 0) kill(server, SIGTERM);
+  server = 0;
 }
 
 // The console's own certificates: the folder they're in, made the first time.
@@ -140,7 +141,7 @@ static void ensure_server(void) {
     _exit(127);
   }
   if (server > 0) {
-    atexit(stop_server);
+    atexit(net_stop_local_server);
     fprintf(stderr, "net: started the local server, %s on port %d\n", script, DEFAULT_PORT);
     for (int i = 0; i < 50; i++) {  // Up to a second for it to listen.
       int test = socket(AF_INET, SOCK_STREAM, 0);

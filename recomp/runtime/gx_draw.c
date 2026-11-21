@@ -15,7 +15,7 @@
 #include "title.h"
 
 enum {
-  BP_GEN_MODE = 0x00, BP_SCISSOR_FIRST = 0x20, BP_SCISSOR_LAST = 0x21, BP_Z_MODE = 0x40, BP_BLEND = 0x41, BP_CONSTANT_ALPHA = 0x42,
+  BP_GEN_MODE = 0x00, Z_FREEZE_BIT = 19, BP_SCISSOR_FIRST = 0x20, BP_SCISSOR_LAST = 0x21, BP_Z_MODE = 0x40, BP_BLEND = 0x41, BP_CONSTANT_ALPHA = 0x42,
   CONSTANT_ALPHA_ENABLE_BIT = 8, BP_CLEAR_COLOR_AR = 0x4f, BP_CLEAR_COLOR_GB = 0x50, BP_CLEAR_DEPTH = 0x51, BP_SCISSOR_OFFSET = 0x59,
   BP_TEXTURE_MODE_LOW = 0x80, BP_TEXTURE_MODE_HIGH = 0xa0, BP_TEXTURE_LIMITS_LOW = 0x84, BP_TEXTURE_LIMITS_HIGH = 0xa4,
   BP_TEXTURE_CACHE_LOW = 0x8c, BP_TEXTURE_CACHE_HIGH = 0xac, CACHE_MANAGED_BIT = 21,
@@ -60,6 +60,7 @@ unsigned gx_frame_number(void) { return frames; }
 typedef struct {
   int used;
   uint32_t address, image, palette;
+  uint64_t colors;  // A paletted image's colors (gx_palette_identity): each set is a texture of its own.
   TextureMemo memo;
   unsigned checked_frame;
   GxTexture *texture;
@@ -83,23 +84,26 @@ static void start(void) {
 }
 
 // Finds a texture's slot by what identifies it, and starts using a free one if new.
-static uint32_t cache_slot(uint32_t address, uint32_t image, uint32_t palette) {
-  uint32_t mixed = (address ^ (image * 31u) ^ (palette * 131u)) * 2654435761u;
+static uint32_t cache_slot(uint32_t address, uint32_t image, uint32_t palette, uint64_t colors) {
+  uint32_t mixed = (address ^ (image * 31u) ^ (palette * 131u) ^ (uint32_t)colors ^ (uint32_t)(colors >> 32)) * 2654435761u;
   uint32_t first = mixed >> CACHE_SLOT_SHIFT;
   for (uint32_t step = 0; step < CACHE_PROBES; step++) {
     uint32_t slot = (first + step) % CACHE_SLOTS;
     CacheEntry *entry = &cache[slot];
-    if (!entry->used || (entry->address == address && entry->image == image && entry->palette == palette)) {
+    if (!entry->used || (entry->address == address && entry->image == image && entry->palette == palette && entry->colors == colors)) {
       entry->used = 1;
       entry->address = address;
       entry->image = image;
       entry->palette = palette;
+      entry->colors = colors;
       return slot;
     }
   }
   cache[first].address = address;
   cache[first].image = image;
   cache[first].palette = palette;
+  cache[first].colors = colors;
+  cache[first].checked_frame = 0;  // Another texture's slot now: what it holds isn't this one.
   return first;
 }
 
@@ -143,7 +147,7 @@ static void bind_texture(int map) {
     use_texture(map, copied, 0);
     return;
   }
-  CacheEntry *entry = &cache[cache_slot(address, image, palette)];
+  CacheEntry *entry = &cache[cache_slot(address, image, palette, gx_palette_identity(image, palette))];
   if (!entry->texture) entry->texture = gx_backend->texture_create();
   use_texture(map, entry->texture, 1);
   // Checking for changed pictures once a frame is plenty.
@@ -275,6 +279,34 @@ static int fog_adds_nothing(int count) {
   return gx_fog_none_between(a < b ? a : b, a < b ? b : a);
 }
 
+// The plane a frozen depth is read from (gx.h): through the last three vertices of a filled
+// shape, on the picture buffer as the card has it. Left as it was when a vertex is behind
+// the camera or the three lie on one line, as Dolphin leaves it.
+float gx_frozen_plane[3];
+int gx_frozen_plane_known, gx_frozen_plane_wanted;
+static void note_depth_plane(int primitive, int count) {
+  if (primitive > PRIM_FAN || count < 3) return;
+  float half_width = xf_float(XF_VIEWPORT), half_height = -xf_float(XF_VIEWPORT + 1);
+  float center_x = xf_float(XF_VIEWPORT + 3) - VIEWPORT_ORIGIN, center_y = xf_float(XF_VIEWPORT + 4) - VIEWPORT_ORIGIN;
+  float depth_near, depth_far, scale = (float)gx_scale_numerator / (float)gx_scale_denominator, at[3][3];
+  viewport_depth(&depth_near, &depth_far);
+  for (int i = 0; i < 3; i++) {
+    float point[3];
+    if (!gx_transform_point(&gx_reserved[count - 3 + i], point)) return;
+    at[i][0] = (center_x + point[0] * half_width) * scale;
+    at[i][1] = (center_y - point[1] * half_height) * scale;
+    at[i][2] = depth_near + (depth_far - depth_near) * point[2];
+  }
+  float dx31 = at[2][0] - at[0][0], dx12 = at[0][0] - at[1][0], dy12 = at[0][1] - at[1][1], dy31 = at[2][1] - at[0][1];
+  float depth31 = at[2][2] - at[0][2], depth21 = at[1][2] - at[0][2];
+  float a = depth31 * -dy12 - depth21 * dy31, b = dx31 * depth21 + dx12 * depth31, c = -dx12 * dy31 - dx31 * -dy12;
+  if (c == 0) return;
+  gx_frozen_plane[0] = -a / c;
+  gx_frozen_plane[1] = -b / c;
+  gx_frozen_plane[2] = at[0][2] - (at[0][0] * gx_frozen_plane[0] + at[0][1] * gx_frozen_plane[1]);
+  gx_frozen_plane_known = 1;
+}
+
 // The game's viewport is in pixels of its own frame.
 static void apply_viewport(void) {
   float half_width = xf_float(XF_VIEWPORT), half_height = -xf_float(XF_VIEWPORT + 1);
@@ -315,6 +347,7 @@ Vertex *gx_reserved;
 int gx_vertex_format;
 TevKey gx_last_tev;
 unsigned gx_used_maps;
+int gx_draw_unchanged;
 int gx_bounds_known;
 float gx_bounds[4];
 enum { BOUNDED_VERTICES = 128 };
@@ -359,43 +392,54 @@ void gx_draw(int primitive, int count) {
   // matrices and vertices between them. So the color stages, the transform's shape, the
   // shader, blending, viewport and scissor are kept, and the backend still holds what they
   // set. Fog that a draw's depths prove adds nothing is still decided for each draw.
-  static struct { int valid, format, expanding; unsigned written, maps; TevKey tev; VertexKey vertex; uint8_t fog_none; } last;
+  static struct { int valid, format, expanding; unsigned written, maps, frame, xf[XF_PARTS]; TevKey tev; VertexKey vertex; } last;
   static int reuse_off = -1;
   if (reuse_off < 0) reuse_off = getenv("WII_RECOMP_NO_DRAW_REUSE") != 0;
-  int same = last.valid && !reuse_off && last.written == gx_settings_written && last.format == gx_vertex_format && last.expanding == gx_expanding;
-  TevKey tev;
-  VertexKey vertex;
-  unsigned maps;
-  if (same) {
-    tev = last.tev, vertex = last.vertex, maps = last.maps;
-  } else {
-    maps = gx_tev_apply(&tev);
-    gx_transform_read(&tev, &vertex);  // Which reads nothing fog decides.
+  // A new frame looks each texture over again (bind_texture), so nothing is kept across one.
+  int same = last.valid && !reuse_off && last.written == gx_settings_written && last.format == gx_vertex_format && last.expanding == gx_expanding
+             && last.frame == frames;
+  uint8_t fog_none_before = last.tev.fog_none;
+  if (!same) {
+    last.maps = gx_tev_apply(&last.tev);
+    gx_transform_read(&last.tev, &last.vertex);  // Which reads nothing fog decides.
   }
   static int keep_fog = -1;
   if (keep_fog < 0) keep_fog = getenv("WII_RECOMP_KEEP_FOG") != 0;
-  tev.fog_none = 0;
-  if (tev.fog_type && !tev.depth_mode && !tev.fog_range && !keep_fog) tev.fog_none = (uint8_t)fog_adds_nothing(count);
-  gx_transform_apply(&vertex);
-  if (!same || tev.fog_none != last.fog_none) gx_shader_use(&tev, &vertex);
-  gx_last_tev = tev;
-  gx_used_maps = maps;
-  for (int map = 0; map < MAX_TEXTURE_MAPS; map++) {
-    if (maps & (1u << map)) bind_texture(map);
+  last.tev.fog_none = 0;
+  if (last.tev.fog_type && !last.tev.depth_mode && !last.tev.fog_range && !keep_fog) last.tev.fog_none = (uint8_t)fog_adds_nothing(count);
+  int same_shader = same && last.tev.fog_none == fog_none_before;
+  // The matrices and lights are XF memory, which a model's lists write between draws with
+  // no setting written. The draw's own values hold the last vertex's normals where the
+  // format has none, and those change with every draw. With neither, what was sent holds.
+  const VertexKey *vertex = &last.vertex;
+  int same_values = same && !memcmp(last.xf, gx_xf_written, sizeof last.xf) && !(vertex->has_normal && !vertex->normals_present) && !vertex->embossed
+                    && !vertex->expanded;
+  if (!same_values) gx_transform_apply(vertex);
+  if (!same_shader) {
+    gx_shader_use(&last.tev, vertex);
+    gx_last_tev = last.tev;
   }
+  gx_used_maps = last.maps;
   if (!same) {
+    // Textures stay bound until a setting is written: a copy made, a texture's registers
+    // and work handed in between two draws all count as one (gx_settings_written).
+    for (int map = 0; map < MAX_TEXTURE_MAPS; map++) {
+      if (last.maps & (1u << map)) bind_texture(map);
+    }
     apply_blending();
     apply_viewport();
     apply_scissor();
+    last.written = gx_settings_written, last.format = gx_vertex_format, last.expanding = gx_expanding, last.frame = frames, last.valid = 1;
   }
-  if (!same) {
-    last.tev = tev, last.vertex = vertex, last.maps = maps;
-    last.written = gx_settings_written, last.format = gx_vertex_format, last.expanding = gx_expanding, last.valid = 1;
-  }
-  last.fog_none = tev.fog_none;
-  if (gx_inspect_draw(&tev, maps, gx_vertex_format, primitive, count, gx_reserved)) {
+  memcpy(last.xf, gx_xf_written, sizeof last.xf);
+  // Nothing was handed to the backend since its last draw but vertices: it may go on as it was.
+  gx_draw_unchanged = same && same_shader && same_values;
+  if (gx_frozen_plane_wanted && !((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1)) note_depth_plane(primitive, count);
+  if (gx_inspect_draw(&last.tev, last.maps, gx_vertex_format, primitive, count, gx_reserved)) {
     gx_backend->vertices_send(gx_reserved, count);
     gx_backend->draw(primitive, count);
+  } else {
+    last.valid = 0;  // The backend's last draw isn't the one before the next.
   }
 }
 

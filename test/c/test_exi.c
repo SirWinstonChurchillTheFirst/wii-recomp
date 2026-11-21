@@ -16,6 +16,10 @@ int files_system_setting(const char *name, uint8_t *out, size_t limit) {
   return 4;
 }
 
+// Made-up stand-ins for the boot ROM fonts build_file.py embeds.
+const unsigned char data_font_western[64] = "Yay0, a western font made up for the test";
+const unsigned char data_font_japanese[64] = "Yay0, a Japanese font made up for the test";
+const unsigned data_font_western_bytes = 64, data_font_japanese_bytes = 64;
 #include "exi.c"
 
 enum { EXI = 0xcd006800u, CLOCK_CHIP = 2u << 7, BUFFER = 0x80001000u };
@@ -96,11 +100,40 @@ static void test_no_device(void) {
   CHECK_EQ(gaps, 1);
 }
 
+// The boot ROM, as OSInitFont reads a font from it: a command with the address, then its
+// bytes from there on by DMA, here into the second memory, where a game's heap may hold the
+// buffer. The DMA address was once cut to the GameCube's 26 bits, which put it in MEM1.
+static void read_rom(uint32_t at, uint32_t buffer, uint32_t bytes) {
+  command(at << 6);
+  exi_write(EXI + 0x04, buffer & 0x1fffffff);
+  exi_write(EXI + 0x08, bytes);
+  exi_write(EXI + 0x0c, control(1, READ, 1));
+}
+
+static void test_boot_rom_fonts(void) {
+  enum { MEM2_BUFFER = 0x90001000u, WESTERN_AT = 0x1fcf00, JAPANESE_AT = 0x1aff00 };
+  wr32(BUFFER, 0x5a5a5a5a);  // Where the cut address would land.
+  read_rom(WESTERN_AT, MEM2_BUFFER, 64);
+  for (uint32_t i = 0; i < 64; i++) CHECK_EQ(rd8(MEM2_BUFFER + i), data_font_western[i]);
+  CHECK_EQ(rd32(BUFFER), 0x5a5a5a5a);
+  read_rom(JAPANESE_AT, MEM2_BUFFER, 64);
+  for (uint32_t i = 0; i < 64; i++) CHECK_EQ(rd8(MEM2_BUFFER + i), data_font_japanese[i]);
+  // Past a font, and between the two, the ROM reads as zeros; below them is the boot code,
+  // which isn't here, and says so.
+  int before = gaps;
+  read_rom(WESTERN_AT + 64, MEM2_BUFFER, 32);
+  CHECK_EQ(rd32(MEM2_BUFFER), 0);
+  CHECK_EQ(gaps, before);
+  read_rom(0x100, MEM2_BUFFER, 32);
+  CHECK(gaps > before);
+}
+
 int main(void) {
   memory_start();
   test_sram();
   test_clock();
   test_interrupt();
   test_no_device();
+  test_boot_rom_fonts();
   return finish();
 }

@@ -132,9 +132,38 @@ static int device_by_address(const uint8_t *address) {
 
 static void next_device_calls(void);
 
+// WII_RECOMP_BLUETOOTH_LOG: every event, command and packet. Read once, as data comes many
+// times a frame.
+static int logging(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("WII_RECOMP_BLUETOOTH_LOG") != 0;
+  return on;
+}
+
 static Packet packets[MAX_PACKETS];
 static int packet_count;
-static uint32_t waiting_events, waiting_data;  // Requests held open until there's something to send.
+// Reads the game keeps open until there's something to send, in the order it made them. IOS
+// queues them; a program may keep several open at once (Mario Party 9 does), and with room
+// for only one each new read replaced the last, which then never came back and stalled its
+// Bluetooth stack: no remote input at all.
+enum { MAX_WAITING = 64 };
+typedef struct { uint32_t requests[MAX_WAITING]; int count; } Waiting;
+static Waiting waiting_events, waiting_data;
+
+static void wait_for(Waiting *queue, uint32_t request) {
+  for (int i = 0; i < queue->count; i++) if (queue->requests[i] == request) return;  // Already open.
+  if (queue->count == MAX_WAITING) {
+    gap_hit("limit.bluetooth_reads_open", request);
+    return;
+  }
+  queue->requests[queue->count++] = request;
+}
+
+static uint32_t take_waiting(Waiting *queue) {
+  uint32_t request = queue->requests[0];
+  memmove(queue->requests, queue->requests + 1, (size_t)--queue->count * sizeof queue->requests[0]);
+  return request;
+}
 static Event events[MAX_EVENTS];
 static int event_count;
 
@@ -147,19 +176,18 @@ static void vector_at(uint32_t request, uint32_t index, uint32_t *address, uint3
 }
 
 static void send_events(void) {
-  while (waiting_events && event_count) {
-    uint32_t address, bytes;
-    vector_at(waiting_events, 2, &address, &bytes);
+  while (waiting_events.count && event_count) {
+    uint32_t address, bytes, request = take_waiting(&waiting_events);
+    vector_at(request, 2, &address, &bytes);
     for (uint32_t i = 0; i < events[0].size && i < bytes; i++) wr8(guest(address) + i, events[0].bytes[i]);
-    ios_complete(waiting_events, (int)events[0].size);
-    waiting_events = 0;
+    ios_complete(request, (int)events[0].size);
     memmove(events, events + 1, (size_t)--event_count * sizeof events[0]);
   }
 }
 
 static void queue_event(int code, const uint8_t *parameters, uint32_t bytes) {
   if (event_count == MAX_EVENTS) { fprintf(stderr, "stop: bluetooth: too many events waiting\n"); exit(11); }
-  if (getenv("WII_RECOMP_BLUETOOTH_LOG")) fprintf(stderr, "bluetooth event %02x, %u bytes\n", code, bytes);
+  if (logging()) fprintf(stderr, "bluetooth event %02x, %u bytes\n", code, bytes);
   Event *event = &events[event_count++];
   event->bytes[0] = (uint8_t)code;
   event->bytes[1] = (uint8_t)bytes;
@@ -182,11 +210,11 @@ static int is_data_report(const Packet *packet) {
 
 // Data from the remote to the game.
 static void send_data(void) {
-  while (waiting_data && packet_count) {
-    uint32_t address, bytes;
-    vector_at(waiting_data, 2, &address, &bytes);
+  while (waiting_data.count && packet_count) {
+    uint32_t address, bytes, request = take_waiting(&waiting_data);
+    vector_at(request, 2, &address, &bytes);
     for (uint32_t i = 0; i < packets[0].size && i < bytes; i++) wr8(guest(address) + i, packets[0].bytes[i]);
-    if (getenv("WII_RECOMP_BLUETOOTH_LOG") && is_data_report(&packets[0])) {
+    if (logging() && is_data_report(&packets[0])) {
       static uint8_t delivered[2];
       if (packets[0].bytes[10] != delivered[0] || packets[0].bytes[11] != delivered[1]) {
         fprintf(stderr, "bluetooth: the game collected buttons %02x%02x, %d still waiting\n", packets[0].bytes[11], packets[0].bytes[10], packet_count - 1);
@@ -194,8 +222,7 @@ static void send_data(void) {
         delivered[1] = packets[0].bytes[11];
       }
     }
-    ios_complete(waiting_data, (int)packets[0].size);
-    waiting_data = 0;
+    ios_complete(request, (int)packets[0].size);
     memmove(packets, packets + 1, (size_t)--packet_count * sizeof packets[0]);
   }
 }
@@ -408,7 +435,7 @@ static void run_command(uint32_t address, uint32_t bytes) {
   uint32_t handle = (rd8(parameters) | (uint32_t)rd8(parameters + 1) << 8) & HANDLE_MASK;
   uint8_t named_address[6];
   for (int i = 0; i < 6; i++) named_address[i] = (uint8_t)rd8(parameters + (uint32_t)i);
-  if (getenv("WII_RECOMP_BLUETOOTH_LOG")) fprintf(stderr, "bluetooth command %04x, %u bytes\n", opcode, bytes);
+  if (logging()) fprintf(stderr, "bluetooth command %04x, %u bytes\n", opcode, bytes);
   find_devices();
   if (opcode == OP_READ_BUFFER_SIZE) {
     const uint8_t results[] = {STATUS_OK, ACL_PACKET_BYTES & 255, ACL_PACKET_BYTES >> 8, SCO_PACKET_BYTES, ACL_PACKETS, 0, SCO_PACKETS, 0};
@@ -576,7 +603,7 @@ void bluetooth_register_remote(uint8_t *settings, size_t bytes) {
 // The game closed the chip's handle. The transfers it held are dropped unanswered, as
 // Dolphin drops them, so no event is written into memory the game has moved on from.
 void bluetooth_closed(void) {
-  waiting_events = waiting_data = 0;
+  waiting_events.count = waiting_data.count = 0;
 }
 
 int bluetooth_request(uint32_t command, uint32_t request) {
@@ -590,17 +617,17 @@ int bluetooth_request(uint32_t command, uint32_t request) {
   vector_at(request, 0, &endpoint_address, &ignored);
   int endpoint = (int)rd8(guest(endpoint_address));
   if (code == USB_INTERRUPT && endpoint == ENDPOINT_EVENTS) {
-    waiting_events = request;
+    wait_for(&waiting_events, request);
     send_events();
     return IOS_NO_REPLY;
   }
   if (code == USB_BULK && endpoint == ENDPOINT_DATA_IN) {
-    waiting_data = request;
+    wait_for(&waiting_data, request);
     send_data();
     return IOS_NO_REPLY;
   }
   vector_at(request, 2, &address, &bytes);
-  if (getenv("WII_RECOMP_BLUETOOTH_LOG")) {
+  if (logging()) {
     fprintf(stderr, "bluetooth data out, %u bytes:", bytes);
     for (uint32_t i = 0; i < bytes && i < 24; i++) fprintf(stderr, " %02x", rd8(guest(address) + i));
     fprintf(stderr, "\n");

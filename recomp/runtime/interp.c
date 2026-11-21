@@ -118,6 +118,7 @@ static uint32_t read_spr(int n) {
     case SPR_DEC: return decrementer_get();
     case SPR_TBL_READ: return (uint32_t)guest_time_base();
     case SPR_TBU_READ: return (uint32_t)(guest_time_base() >> 32);
+    case 921: return cpu.spr[n] & ~1u;  // WPAR: the pipe reads as empty (emit.py).
     default: return cpu.spr[n];
   }
 }
@@ -136,6 +137,7 @@ static void write_spr(int n, uint32_t value) {
       cpu.spr[n] = value;
       locked_cache_transfer();
       break;
+    case 921: cpu.spr[n] = value; graphics_pipe_reset(); break;  // WPAR (emit.py).
     default: cpu.spr[n] = value; break;
   }
 }

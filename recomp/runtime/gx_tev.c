@@ -6,7 +6,9 @@
 #include <string.h>
 
 #include "debug.h"
+#include "gaps.h"
 #include "gx.h"
+#include "gx_backend.h"
 
 #define DEPTH_MAX 16777215.0f
 
@@ -37,7 +39,8 @@ enum {
   ALPHA_NEVER = 0, ALPHA_LESS = 1, ALPHA_EQUAL = 2, ALPHA_LEQUAL = 3, ALPHA_GREATER = 4, ALPHA_NOT_EQUAL = 5,
   ALPHA_GEQUAL = 6, ALPHA_ALWAYS = 7, LOGIC_AND = 0, LOGIC_OR = 1, LOGIC_XOR = 2,
   RASTER_NONE = 2, RASTER_BUMP = 5, RASTER_BUMP_NORMALIZED = 6, RASTER_ZERO = 7,
-  DEPTH_OFF = 0, DEPTH_ADD = 1, DEPTH_REPLACE = 2, DEPTH_FORMAT_LOW_BYTE = 0, DEPTH_FORMAT_TWO_BYTES = 1,
+  DEPTH_OFF = 0, DEPTH_ADD = 1, DEPTH_REPLACE = 2, DEPTH_FROZEN = 3, DEPTH_FORMAT_LOW_BYTE = 0, DEPTH_FORMAT_TWO_BYTES = 1,
+  Z_FREEZE_BIT = 19,
   WRAP_NONE = 0, WRAP_ZERO = 6, WRAP_LARGEST = 512,
   INDIRECT_FORMAT_FULL = 0, INDIRECT_BIAS_FULL = -128, INDIRECT_BIAS_SHORT = 1,
   INDIRECT_KIND_FIXED = 0, INDIRECT_KIND_S = 1, INDIRECT_KIND_T = 2, INDIRECT_KINDS = 3,
@@ -333,6 +336,25 @@ static int tests_depth_early(void) {
 
 static void read_depth(TevKey *key, TevValues *values, int last_map) {
   uint32_t mode = gx.bp[BP_Z_TEXTURE], chosen = (mode >> 2) & 3;
+  // Frozen depth (gx.h) comes from a plane, whatever the triangle's own depth is. Its three
+  // numbers travel in values nothing else reads then: the depth bias, and the two after the
+  // fog range's center. A depth texture on top of it isn't followed, and says so.
+  if ((gx.bp[BP_GEN_MODE] >> Z_FREEZE_BIT) & 1) {
+    gx_frozen_plane_wanted = 1;
+    if (!gx_frozen_plane_known) {
+      // The run's first frozen draws, until a triangle has been drawn with the plane being kept.
+      gap_hit("pixel.z_freeze", Z_FREEZE_BIT);
+    } else if (gx_backend && !strcmp(gx_backend->name, "opengl")) {
+      // The plane counts rows from the top of the picture, as Vulkan's gl_FragCoord does.
+      // OpenGL's counts from the bottom, which would tilt the plane the wrong way.
+      debug_unsupported("pixel.z_freeze", "frozen depth on OpenGL, whose rows count from the bottom", 0);
+    } else {
+      if (chosen != DEPTH_OFF && !tests_depth_early()) debug_unsupported("pixel.z_freeze", "frozen depth with a depth texture as well", chosen);
+      key->depth_mode = DEPTH_FROZEN;
+      values->alpha_settings[3] = gx_frozen_plane[2];
+      return;
+    }
+  }
   if (chosen == DEPTH_OFF) return;
   // Depth tested first is stored before any texture could change it, as Dolphin's
   // PixelShaderGen.cpp has it. Fog would still see the texture's depth there.
@@ -355,7 +377,8 @@ unsigned gx_tev_read(TevKey *key, TevValues *values) {
   int coordinates_on = (int)(gx.bp[BP_GEN_MODE] & TEXTURE_COORDINATES_MASK);
   key->no_coordinates = !coordinates_on;
   read_depth(key, values, (int)((gx.bp[BP_TEV_ORDER + last / 2] >> (last & 1 ? 12 : 0)) & 7));
-  for (int i = 0; i < key->stages; i++) read_stage(key, i, fetches, key->depth_mode && i == last, coordinates_on);
+  int depth_texture = key->depth_mode == DEPTH_ADD || key->depth_mode == DEPTH_REPLACE;
+  for (int i = 0; i < key->stages; i++) read_stage(key, i, fetches, depth_texture && i == last, coordinates_on);
   // A stage's coordinate only matters to the one after if that one adds on to it.
   for (int i = last; i > 0; i--) {
     TevStage *before = &key->stage[i - 1];
@@ -386,6 +409,11 @@ unsigned gx_tev_read(TevKey *key, TevValues *values) {
   }
   read_fog(key, values);
   read_logic(key);
+  if (key->depth_mode == DEPTH_FROZEN) {  // After the fog's own values are in.
+    values->fog_range_center[2] = gx_frozen_plane[0];
+    values->fog_range_center[3] = gx_frozen_plane[1];
+    key->early_depth = 0;  // The depth tested is the plane's, which only the shader knows.
+  }
   gx_tev_reads(key, &maps, &coordinates, &channels);
   read_map_biases(key, values, maps);
   return maps;
@@ -541,7 +569,7 @@ static void add_stage(ShaderText *text, const TevKey *key, int index) {
     // it notes the second as needing more of them.
     gx_text_add(text, "    vec4 T = vec4(%s);\n", key->no_coordinates ? "0.0" : "1.0");
   }
-  if (key->depth_mode && index == key->stages - 1) gx_text_add(text, "    depth_texture = T;\n");
+  if (key->depth_mode && key->depth_mode != DEPTH_FROZEN && index == key->stages - 1) gx_text_add(text, "    depth_texture = T;\n");
   if (s->reads_raster && s->raster == RASTER_NONE) gx_text_add(text, "    vec4 C = vec4(0.0);\n");
   else if (s->reads_raster && s->raster == RASTER_BUMP) gx_text_add(text, "    vec4 C = vec4(float(bump_alpha) / 255.0);\n");
   else if (s->reads_raster && s->raster == RASTER_BUMP_NORMALIZED) gx_text_add(text, "    vec4 C = vec4(float(bump_alpha | (bump_alpha >> 5)) / 255.0);\n");
@@ -594,6 +622,10 @@ static void add_test(ShaderText *text, int mode, char reference) {
 
 // The bytes of a depth texture run from the low end of the 24-bit value up.
 static void add_depth(ShaderText *text, const TevKey *key) {
+  if (key->depth_mode == DEPTH_FROZEN) {
+    gx_text_add(text, "  gl_FragDepth = clamp(alpha_settings.w + fog_range_center.z * gl_FragCoord.x + fog_range_center.w * gl_FragCoord.y, 0.0, 1.0);\n");
+    return;
+  }
   if (key->depth_from_copy) {
     gx_text_add(text, "  float texture_depth = depth_texture.r;\n");
   } else {
@@ -676,7 +708,7 @@ void gx_tev_write_shader(const TevKey *key, int bounding_box, ShaderText *text) 
     if (key->projected & (1u << i)) gx_text_add(text, "  vec2 uv%d = v_uv%d.z != 0.0 ? v_uv%d.xy / v_uv%d.z : v_uv%d.xy;\n", i, i, i, i, i);
     else gx_text_add(text, "  vec2 uv%d = v_uv%d;\n", i, i);
   }
-  if (key->depth_mode) gx_text_add(text, "  vec4 depth_texture;\n");
+  if (key->depth_mode && key->depth_mode != DEPTH_FROZEN) gx_text_add(text, "  vec4 depth_texture;\n");
   for (int i = 0; i < key->stages; i++) add_stage(text, key, i);
   // The picture takes the last stage's own output, whichever register that was.
   gx_text_add(text, "  vec4 result = vec4(R%d.rgb, R%d.a);\n", last->color_target, last->alpha_target);

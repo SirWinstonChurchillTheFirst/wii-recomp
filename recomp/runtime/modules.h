@@ -40,6 +40,14 @@ typedef struct {
   uint32_t *counts;  // Runs of each function built to count them, or 0.
 } Module;
 
+// Where a branch a module's linker filled in goes now. Translated code reads it each time
+// for a branch into another module, which the game links and unlinks as it runs.
+static inline uint32_t module_branch_target(uint32_t at) {
+  uint32_t word = rd32(at), offset = word & 0x3fffffcu;
+  if (offset & 0x2000000u) offset -= 0x4000000u;
+  return word & 2 ? offset : at + offset;
+}
+
 // Called with an address nothing is translated for. Returns 1 if it lies in a linked
 // module, which is then checked and its functions made ready, and 0 if not.
 int modules_bind(uint32_t address);

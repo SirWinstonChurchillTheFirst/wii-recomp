@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Wii Recomp statically translates a Wii game's PowerPC code to C and runs it on a native "console" runtime. Python translator in `recomp/translate/`, C runtime in `recomp/runtime/`. Targets: Intel Mac and Raspberry Pi 5. Full walkthrough in README.md ("Build and run").
+Wii Recomp statically translates a Wii game's PowerPC code to C and runs it on a native "console" runtime. Python translator in `recomp/translate/`, C runtime in `recomp/runtime/`. Targets: Intel Mac and Raspberry Pi 5, and Windows 10/11 and Linux x86-64 PCs (`docs/windows.md`; PC builds use `-march=x86-64-v3`, and the console stops on a processor without it). Full walkthrough in README.md ("Build and run").
 
 ## Build, run, test
 
@@ -23,7 +23,7 @@ python3 -m unittest discover test        # unittest, not pytest
 python3 -m ruff check                    # Python lint, bug rules only (ruff.toml); no C linter
 ```
 
-- Two build tiers with `emit.py --profile`: `part*.c` compile at `-O2`, `cold*.c` at `-O0` (~5x faster to compile) and count their runs via `POLL_COUNTED`. The console saves counts to `<title data>/<title ID>/profile.txt` (`title-data/` beside the console, `cache/titles/` in a console folder), with `discovered.txt` and `shaders.bin` (shader recipes, `gx_recipes.c`, packed into the `.wrd`) beside it; rerunning `add_game.py` promotes what ran. Nothing in the quick tier should matter for frame rate, so check a walk before changing `HOT_SHARE`.
+- Two build tiers with `emit.py --profile`, both compiled at `-O2` so code first run in play doesn't stutter: `cold*.c` also counts its runs via `POLL_COUNTED`, `part*.c` doesn't. The console saves counts to `<title data>/<title ID>/profile.txt` (`title-data/` beside the console, `cache/titles/` in a console folder), with `discovered.txt` and `shaders.bin` (shader recipes, `gx_recipes.c`, packed into the `.wrd`) beside it; rerunning `add_game.py` promotes every function that ran (one-off code at a level's start caused hitches when only the most-run share was promoted).
 - Graphics work is measured on recordings, not by driving a game: `record <frames> <file>` through `WII_RECOMP_CONTROL` (or `WII_RECOMP_RECORD=<frame>:<frames>:<file>`) saves a scene, and `python3 recomp/tools/scene_bench.py <folder> [--reference DIR | --save-reference DIR]` times every recording in a folder and compares pictures. Recordings hold game data: keep them outside the repo. Memory is taken once a frame, so they suit timing and comparing our own versions, not cycle-exact checks.
 - The console links SDL3 for controllers: `brew install sdl3` on the Mac, `recomp/tools/sdl3_setup.sh --prefix ~/.local` on the Pi (no root); `build_file.py` finds either.
 - No CMake/top-level Makefile: `build_file.py` generates the ninja file. Pi vs Mac flags (cortex-a76, `EFB_SCALE=5/2`, Vulkan-only on Pi) all live there.

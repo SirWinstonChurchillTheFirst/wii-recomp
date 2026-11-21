@@ -50,9 +50,14 @@ static int exists(const char *folder, const char *path) {
 int main(int count, char **arguments) {
   memory_start();
   const char *storage = arguments[1], *saves = arguments[2];
+  char full[1024];
+  // An empty save folder setting counts as unset, rather than as the computer's root.
+  setenv("WII_RECOMP_SAVES", "", 1);
+  files_start(storage);
+  files_save_path("/tmp", full, sizeof full);
+  CHECK(!strcmp(full, "recomp/build/saves/tmp"));
   setenv("WII_RECOMP_SAVES", saves, 1);
   files_start(storage);
-  char full[1024];
 
   // Usage counts each file's clusters and every inode, through both folders.
   wr32(REQUEST + 12, 2);  // GETSTATS.

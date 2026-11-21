@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -31,6 +32,8 @@ NODTOOL_BUILDS = {
                           "ee8345c004248eb82a86dd0c6068e0fcf3dc75baf68d18fe949bf4589822f5a5"),
     ("Linux", "aarch64"): ("nodtool-linux-aarch64",
                            "33e801c0e4aee7e714ad84e89521f50e2f79005571b9d4779b695e44ea21ff99"),
+    ("Windows", "x86_64"): ("nodtool-windows-x86_64.exe",
+                            "f65de62c44f0ad5d179eff85bd1e92099713ffacbf717f651fb761129a25c7bc"),
 }
 
 
@@ -54,19 +57,36 @@ def check_hash(data, expected):
         fail(f"nodtool download failed its checksum (got {actual})")
 
 
+def download(url):
+    """The file at url. Python's own TLS can't fetch an intermediate certificate the server
+    leaves out, which Windows does by itself, so on Windows a failed download is tried
+    again with the curl that comes with it. The checksum is checked either way."""
+    try:
+        with urllib.request.urlopen(url) as response:
+            return response.read()
+    except urllib.error.URLError as error:
+        curl = shutil.which("curl")
+        if not curl:
+            raise
+        print(f"Python couldn't download it ({error.reason}); trying curl")
+        result = subprocess.run([curl, "-fsSL", url], capture_output=True)
+        if result.returncode:
+            fail(f"the download failed: {result.stderr.decode(errors='replace').strip()}")
+        return result.stdout
+
+
 def find_nodtool():
     """Uses an installed nodtool, or downloads the pinned version once."""
     installed = shutil.which("nodtool")
     if installed:
         return installed
-    tool = TOOL_FOLDER / "nodtool"
+    tool = TOOL_FOLDER / ("nodtool.exe" if platform.system() == "Windows" else "nodtool")
     if tool.exists():
         return str(tool)
     asset, expected = nodtool_build(platform.system(), platform.machine())
     url = NODTOOL_URL.format(version=NODTOOL_VERSION, asset=asset)
     print(f"Downloading {asset} {NODTOOL_VERSION}")
-    with urllib.request.urlopen(url) as response:
-        data = response.read()
+    data = download(url)
     check_hash(data, expected)
     TOOL_FOLDER.mkdir(exist_ok=True)
     tool.write_bytes(data)

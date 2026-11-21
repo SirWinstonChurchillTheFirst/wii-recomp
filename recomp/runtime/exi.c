@@ -23,7 +23,7 @@ enum {
   SELECT_CLOCK_CHIP = 2,  // On channel 0. 1 is memory card slot A there.
   // The clock chip's command: bit 31 writes, and the address is bits 6 to 30.
   COMMAND_WRITE = 1u << 31, ADDRESS_SHIFT = 6, ADDRESS_MASK = 0x1ffffff, COMMAND_BYTES = 4,
-  ROM_END = 0x200000, SRAM_BASE = 0x800000, UART_BASE = 0x800400, WII_RTC_FLAGS = 0x840020,
+  ROM_END = 0x200000, FONT_JAPANESE_AT = 0x1aff00, FONT_WESTERN_AT = 0x1fcf00, SRAM_BASE = 0x800000, UART_BASE = 0x800400, WII_RTC_FLAGS = 0x840020,
   // SRAM: the clock, then the settings, whose checksum covers bytes 16 to 23.
   SRAM_BYTES = 0x44, SRAM_CLOCK_BYTES = 4, SRAM_CHECKSUM = 4, SUMMED_FIRST = 16, SUMMED_END = 24,
   SRAM_FLAGS = 23, SRAM_CARD_CHECKSUMS = 62,
@@ -109,7 +109,17 @@ static uint8_t clock_chip_byte(uint8_t in) {
     chip.rtc_flags = (chip.rtc_flags & ~(0xffu << shift)) | (uint32_t)in << shift;
     return 0;
   }
-  if (address < ROM_END && !write) gap_hit("unlisted.hw.ipl_rom_fonts", address);
+  if (address < ROM_END && !write) {
+    // The boot ROM, of which programs read only the two fonts (OSInitFont), each a Yay0
+    // file at the place Dolphin's EXI_DeviceIPL.cpp gives. These are Dolphin's free
+    // fonts, not Nintendo's. A read goes on from the command's address, byte by byte.
+    extern const unsigned char data_font_western[], data_font_japanese[];
+    extern const unsigned data_font_western_bytes, data_font_japanese_bytes;
+    uint32_t at = address + chip.cursor++;
+    if (at >= FONT_WESTERN_AT && at - FONT_WESTERN_AT < data_font_western_bytes) return data_font_western[at - FONT_WESTERN_AT];
+    if (at >= FONT_JAPANESE_AT && at - FONT_JAPANESE_AT < data_font_japanese_bytes) return data_font_japanese[at - FONT_JAPANESE_AT];
+    if (at < FONT_JAPANESE_AT) gap_hit("hw.ipl_rom_code", address);  // The boot code itself, which isn't here.
+  }
   return 0;  // The debug UART, whose output nothing needs.
 }
 
@@ -186,7 +196,12 @@ int exi_write(uint32_t address, uint32_t value) {
     // Selecting the clock chip starts a new command.
     if (channel == 0 && selected(0) == SELECT_CLOCK_CHIP && before != SELECT_CLOCK_CHIP) chip.received = chip.cursor = 0;
     update_interrupt();
-  } else if (offset == DMA_ADDRESS) c->dma_address = value & 0x03ffffe0u;
+  } else if (offset == DMA_ADDRESS) {
+    // A physical address in 32-byte steps. The GameCube's 26 bits don't reach the Wii's
+    // second memory at 0x10000000, where a game's heap may hold the buffer: cut short,
+    // a font read into MEM2 landed over the program's own data in MEM1.
+    c->dma_address = value & 0x1fffffe0u;
+  }
   else if (offset == DMA_LENGTH) c->dma_length = value & 0x03ffffe0u;
   else if (offset == CONTROL) {
     c->control = value;

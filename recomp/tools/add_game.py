@@ -11,10 +11,10 @@ title's native code, and packs both into games/<game ID>.wrd. Play it with
 `recomp/build/wii-recomp games/<game ID>.wrd`, or give --console to put it in that
 console's drive for the Wii Menu (recomp/tools/prepare_console.py makes one).
 
-The first build compiles everything quickly, and the code counts how often it runs.
-Run add_game.py again after playing (with the game ID, the disc or the folder) and the
-code that did the work is compiled for speed, using what every run so far recorded:
-the profile and any code the interpreter had to run. Only what changed is rebuilt, and
+The first build compiles everything for speed, and the code counts how often it runs.
+Run add_game.py again after playing (with the game ID, the disc or the folder) and every
+function that ran is built without the counting, using what every run so far recorded:
+the profile and any code the interpreter had to run, which is translated then. Only what changed is rebuilt, and
 the image's native code is swapped without copying the disc again. The image also
 carries the shaders every run drew with, as recipes any computer builds before the
 first picture, so they don't hold up frames during play.
@@ -46,7 +46,14 @@ RECOMP = ROOT / "recomp"
 CONSOLE_BUILD = RECOMP / "build"
 GAMES = ROOT / "games"
 TITLE_ID_OFFSET = 0x18c  # In the disc's tmd.bin.
-LIBRARY = "title.dylib" if sys.platform == "darwin" else "title.so"
+LIBRARY = {"darwin": "title.dylib", "win32": "title.dll"}.get(sys.platform, "title.so")
+PROGRAM = "wii-recomp.exe" if sys.platform == "win32" else "wii-recomp"
+if sys.platform == "win32":
+    # MSYS2's clang and ninja, and the libraries the console loads, ahead of anything else.
+    MSYS2_BIN = Path(os.environ.get("MSYS2_ROOT", "C:/msys64")) / "clang64/bin"
+    if not (MSYS2_BIN / "clang.exe").is_file():
+        raise SystemExit(f"add_game: MSYS2's clang isn't in {MSYS2_BIN}; see docs/windows.md")
+    os.environ["PATH"] = f"{MSYS2_BIN}{os.pathsep}{os.environ['PATH']}"
 DISC_IMAGES = {".iso", ".rvz", ".wbfs", ".ciso", ".gcz", ".wia"}
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -59,7 +66,7 @@ def fail(message):
 
 def native_platform():
     """The platform name a recompiled disc image files this computer's native code under."""
-    system = {"Darwin": "darwin", "Linux": "linux"}.get(platform.system())
+    system = {"Darwin": "darwin", "Linux": "linux", "Windows": "windows"}.get(platform.system())
     machine = {"AMD64": "x86_64", "x86_64": "x86_64", "arm64": "arm64", "aarch64": "arm64"}.get(platform.machine())
     if system == "linux" and machine == "arm64":
         machine = "aarch64"
@@ -295,7 +302,7 @@ def main():
 
     (CONSOLE_BUILD / "obj").mkdir(parents=True, exist_ok=True)
     run("build the console", [sys.executable, str(RECOMP / "translate/build_file.py"), str(CONSOLE_BUILD)])
-    run("compile the console", ["ninja", "-j", str(options.jobs), "wii-recomp"], cwd=CONSOLE_BUILD)
+    run("compile the console", ["ninja", "-j", str(options.jobs), PROGRAM], cwd=CONSOLE_BUILD)
     emit = [sys.executable, str(RECOMP / "translate/emit.py"), str(disc / "sys/main.dol"), str(build / "generated"),
             "--all-code", "--virtual-bluetooth", "--profile", str(profile)]
     emit += ["--fifo-breakpoints"] if settings["fifo_breakpoints"] else []
@@ -311,8 +318,8 @@ def main():
         for console in settings["consoles"]:
             install(build, disc, key, console)
         print(f"\n{key} is ready in {time.monotonic() - started:.0f} s. Start it from the Wii Menu, or with:\n"
-              f"  {CONSOLE_BUILD.relative_to(ROOT) / 'wii-recomp'} --console <console> --title {key}\n"
-              "Run this again after playing to compile the code that ran most for speed.")
+              f"  {CONSOLE_BUILD.relative_to(ROOT) / PROGRAM} --console <console> --title {key}\n"
+              "Run this again after playing to add what the game ran: code it found and the shaders it drew with.")
         return
     if options.no_pack:
         print(f"\n{code} is built in {build / LIBRARY}: {time.monotonic() - started:.0f} s in all")
@@ -332,8 +339,8 @@ def main():
     for console in settings["consoles"]:
         insert(image, console)
     print(f"\n{code} is ready in {time.monotonic() - started:.0f} s. Play it with:\n"
-          f"  {CONSOLE_BUILD.relative_to(ROOT) / 'wii-recomp'} {image.relative_to(ROOT)}\n"
-          "Run this again after playing to compile the code that ran most for speed.")
+          f"  {CONSOLE_BUILD.relative_to(ROOT) / PROGRAM} {image.relative_to(ROOT)}\n"
+          "Run this again after playing to add what the game ran: code it found and the shaders it drew with.")
 
 
 if __name__ == "__main__":

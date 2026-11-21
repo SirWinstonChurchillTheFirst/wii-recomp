@@ -3,8 +3,10 @@
 // what was translated, word for word, apart from the fields its linker fills in.
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "modules.h"
+#include "dispatch.h"
 #include "title.h"
 
 static int is_guest(uint32_t address) { return address >= 0x80000000u && address < 0x81800000u; }
@@ -41,10 +43,39 @@ static uint32_t branch_target(uint32_t at) {
   return word & 2 ? offset : at + offset;
 }
 
+// Where each bound module's header is, by its number in the title, 0 if it isn't bound.
+static uint32_t headers[65536];
+
+static int module_number(const Module *module) {
+  for (int m = 0; m < title->module_count; m++) if (title->modules[m] == module) return m;
+  return 0;
+}
+
+// A REL's header keeps its number while it's linked, and an RSO's its section table with
+// the code's place and size; another module loaded over it changes that (RSOs have no
+// number, and Mario Sports Mix loads each sport's where the menu's was). Then its
+// functions are let go, and the next call there finds whichever module is there now.
+int modules_still_bound(int number) {
+  const Module *module = title->modules[number];
+  uint32_t header = headers[number], found;
+  if (header && (module->id ? rd32(header) == module->id : looks_linked(module, *module->code, &found) && found == header)) return 1;
+  if (header) {
+    uint32_t code = *module->code;
+    for (int i = 0; i < module->function_count; i++) dispatch_forget_module(code + module->functions[i].offset, number);
+    headers[number] = 0;
+    fprintf(stderr, "module %s: no longer at %08x, let go\n", module->name, header);
+  }
+  return 0;
+}
+
 static void bind(const Module *module, uint32_t code, uint32_t header) {
   *module->code = code;
   uint32_t table = rd32(header + module->table_field);
   for (uint32_t i = 0; i < module->section_count; i++) module->sections[i] = rd32(table + i * 8) & ~1u;
+  // Its own functions first: a module can import what it exports itself.
+  int number = module_number(module);
+  headers[number] = header;
+  for (int i = 0; i < module->function_count; i++) dispatch_register_module(code + module->functions[i].offset, module->functions[i].run, number);
   for (int i = 0; i < module->import_count; i++) {
     const ImportSite *site = &module->imports[i];
     if (site->kind == 1 || site->kind == 3) module->import_addresses[i] = branch_target(code + site->first);
@@ -67,7 +98,6 @@ static void bind(const Module *module, uint32_t code, uint32_t header) {
       exit(4);
     }
   }
-  for (int i = 0; i < module->function_count; i++) dispatch_register(code + module->functions[i].offset, module->functions[i].run);
   fprintf(stderr, "module %s: linked at %08x, %d native functions ready\n", module->name, header, module->function_count);
 }
 
@@ -83,8 +113,15 @@ static int try_code(const Module *module, uint32_t code) {
 }
 
 int modules_bind(uint32_t address) {
+  // WII_RECOMP_NO_MODULES=all leaves every module to the interpreter, and a list of names
+  // those modules, to tell a module's own faults from its translation's.
+  static const char *left;
+  static int asked;
+  if (!asked) { left = getenv("WII_RECOMP_NO_MODULES"); asked = 1; }
+  if (left && !strcmp(left, "all")) return 0;
   for (int m = 0; m < title->module_count; m++) {
     const Module *module = title->modules[m];
+    if (left && strstr(left, module->name)) continue;
     for (int i = 0; i < module->export_count; i++) {
       if (try_code(module, address - module->exports[i])) return 1;
     }

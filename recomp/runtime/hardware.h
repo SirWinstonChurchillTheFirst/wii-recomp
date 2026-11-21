@@ -38,6 +38,6 @@ void graphics_pipe_write(uint32_t value, int bytes);
 enum { GRAPHICS_PIPE = 0xcc008000u, GRAPHICS_PIPE_BYTES = 0x1000u };
 int graphics_read(uint32_t address, uint32_t *value);
 void graphics_update(void);
-void graphics_retrace(void);
+void graphics_retrace(double field_rate);  // A field begins, at this many fields a second (vi.c, on the game's thread).
 int graphics_busy(void);  // Commands are still waiting to be run.
 uint64_t graphics_next_due(void);  // When the next delayed signal is due, or 0 if none is.

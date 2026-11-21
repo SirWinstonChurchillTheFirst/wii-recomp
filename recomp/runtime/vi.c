@@ -124,7 +124,7 @@ void vi_update(uint64_t now) {
   uint64_t frame = timing.frame_half_lines;
   #define COMES(half_line) (from + ((half_line) + frame - from % frame) % frame < passed)
   if (COMES(0) || COMES(timing.odd_half_lines)) {
-    graphics_retrace();
+    graphics_retrace(vi_field_rate());
     check_shown_picture();
   }
   for (int i = 0; i < INTERRUPT_COUNT; i++) {

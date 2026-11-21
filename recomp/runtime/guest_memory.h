@@ -29,6 +29,13 @@
 #endif
 
 #define GUEST_BASE ((uint8_t *)GUEST_BASE_ADDRESS)
+#ifdef _WIN32
+// On Windows a title's library can't name a variable in the console directly, so the
+// processor state and the interrupt count sit at a fixed address too, 256 MiB past the
+// window's end (win_compat.c makes it; cpu.h names what's there).
+#define HOST_STATE_ADDRESS (GUEST_BASE_ADDRESS + 0x50000000ull)
+#define HOST_STATE_BYTES 0x10000u
+#endif
 #define GUEST_WINDOW (1ull << 30)
 #define GUEST_GUARD (1ull << 16)  // Past the end, for an 8-byte access that starts in the last bytes.
 #define MEM1_START 0x00000000u

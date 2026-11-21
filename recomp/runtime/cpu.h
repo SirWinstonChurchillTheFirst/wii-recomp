@@ -17,7 +17,11 @@ typedef struct {
   uint32_t sr[16];          // Segment registers. Stored only, as nothing maps through them.
 } Cpu;
 
+#ifdef _WIN32
+#define cpu (*(Cpu *)HOST_STATE_ADDRESS)
+#else
 extern Cpu cpu;
+#endif
 
 typedef void (*GuestFunction)(void);
 void dispatch(uint32_t address);
@@ -48,9 +52,18 @@ void ps_store(uint32_t address, int w, int gqr, int rs);
 void save_context(void);
 void load_context(void);
 void enter_exception(uint32_t kind, uint32_t handler);
+// The game's setjmp and longjmp, as host context switches (threads.c).
+void guest_setjmp(void);
+void guest_longjmp(void);
+void guest_setjmp_plain(void);   // The same without paired singles (Mario Party 8).
+void guest_longjmp_plain(void);
 
 // Interrupts (interrupts.c). Translated code counts down and checks in here.
+#ifdef _WIN32
+#define interrupt_budget (*(int *)(HOST_STATE_ADDRESS + 0x8000))
+#else
 extern int interrupt_budget;
+#endif
 void poll_interrupts(void);
 // The program turned external interrupts on (mtmsr). One already waiting is taken at the
 // next check, as the processor takes it at once, rather than when the count runs out:
@@ -59,6 +72,9 @@ void interrupts_turned_on(void);
 void decrementer_set(uint32_t value);
 uint32_t decrementer_get(void);
 void locked_cache_transfer(void);
+// Writing WPAR resets the CPU's write-gather pipe, dropping bytes it hadn't sent, as
+// Dolphin's GPFifo does (gx_fifo.c). GXBeginDisplayList relies on it.
+void graphics_pipe_reset(void);
 #define POLL() do { if (--interrupt_budget < 0) poll_interrupts(); } while (0)
 
 // Memory is one window at a fixed address (guest_memory.h). An access costs a mask, one

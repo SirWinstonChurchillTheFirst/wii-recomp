@@ -20,13 +20,13 @@ int dsp_lle_start(const uint8_t *rom, const uint8_t *coef);
 void dsp_lle_reset(void);     // pc = 0x8000 and the wrap registers all ones, as SDSP::Reset.
 int dsp_lle_run(int cycles);  // About `cycles` instructions; returns the leftover, as DSPCore::RunCycles (0).
 
-// The two mailboxes, as DSPLLE's DSP_Read/WriteMailBox*: cpu = 1 for the CPU's mailbox
+// The two mailboxes, as DSPLLE's DSP_Read/WriteMailBox*: cpu_side = 1 for the CPU's mailbox
 // (CPU to DSP), 0 for the DSP's (DSP to CPU). Reading a low half empties that mailbox.
-uint16_t dsp_lle_mailbox_read_high(int cpu);
-uint16_t dsp_lle_mailbox_read_low(int cpu);
-void dsp_lle_mailbox_write_high(int cpu, uint16_t value);
-void dsp_lle_mailbox_write_low(int cpu, uint16_t value);
-uint32_t dsp_lle_mailbox_peek(int cpu);
+uint16_t dsp_lle_mailbox_read_high(int cpu_side);
+uint16_t dsp_lle_mailbox_read_low(int cpu_side);
+void dsp_lle_mailbox_write_high(int cpu_side, uint16_t value);
+void dsp_lle_mailbox_write_low(int cpu_side, uint16_t value);
+uint32_t dsp_lle_mailbox_peek(int cpu_side);
 
 // The control register bits the processor owns: reset 0x1, external interrupt 0x2, halt 0x4,
 // init code 0x400, init 0x800 (the others are kept as written). Clearing init loads 4 KB from

@@ -50,6 +50,7 @@ void guest_time_base_set(int high_half, uint32_t value) {
 void decrementer_set(uint32_t value) { effects.decrementer_writes++; effects.decrementer_value = value; }
 uint32_t decrementer_get(void) { return DECREMENTER_NOW; }
 void locked_cache_transfer(void) { effects.cache_transfers++; }
+void graphics_pipe_reset(void) {}
 void poll_interrupts(void) { interrupt_budget = 0; effects.polls++; }
 void interrupts_turned_on(void) {}
 void fpscr_mode_changed(uint32_t fpscr) { (void)fpscr; }

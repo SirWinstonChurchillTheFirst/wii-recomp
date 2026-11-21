@@ -38,9 +38,51 @@ static const uint32_t control_buttons[KEY_CONTROLS] = {
   [KEY_ZL] = BUTTON_CLASSIC_ZL, [KEY_ZR] = BUTTON_CLASSIC_ZR, [KEY_C] = BUTTON_NUNCHUK_C, [KEY_Z] = BUTTON_NUNCHUK_Z,
 };
 
+// Full screen: F11 or Alt+Enter switch, WII_RECOMP_FULLSCREEN=1 starts in it. The whole
+// monitor the window is on, at its own mode, so a TV or a game console box shows the game
+// alone, above whatever menu started it; the pointer hides there, as the mouse is only a
+// remote's pointer. The window comes back where and as big as it was.
+static int fullscreen, windowed_x, windowed_y, windowed_width, windowed_height;
+
+static GLFWmonitor *monitor_of_window(void) {
+  int count = 0, x, y, width, height;
+  GLFWmonitor **monitors = glfwGetMonitors(&count);
+  glfwGetWindowPos(window, &x, &y);
+  glfwGetWindowSize(window, &width, &height);
+  int center_x = x + width / 2, center_y = y + height / 2;
+  for (int i = 0; i < count; i++) {
+    int mx, my;
+    const GLFWvidmode *mode = glfwGetVideoMode(monitors[i]);
+    glfwGetMonitorPos(monitors[i], &mx, &my);
+    if (mode && center_x >= mx && center_x < mx + mode->width && center_y >= my && center_y < my + mode->height) return monitors[i];
+  }
+  return glfwGetPrimaryMonitor();
+}
+
+static void set_fullscreen(int on) {
+  if (on == fullscreen) return;
+  if (on) {
+    glfwGetWindowPos(window, &windowed_x, &windowed_y);
+    glfwGetWindowSize(window, &windowed_width, &windowed_height);
+    GLFWmonitor *monitor = monitor_of_window();
+    const GLFWvidmode *mode = monitor ? glfwGetVideoMode(monitor) : 0;
+    if (!mode) return;
+    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+  } else {
+    glfwSetWindowMonitor(window, 0, windowed_x, windowed_y, windowed_width, windowed_height, GLFW_DONT_CARE);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+  }
+  fullscreen = on;
+}
+
 static void on_key(GLFWwindow *from, int key, int scancode, int action, int mods) {
-  (void)from; (void)scancode; (void)mods;
+  (void)from; (void)scancode;
   if (action == GLFW_REPEAT) return;
+  if (action == GLFW_PRESS && (key == GLFW_KEY_F11 || (key == GLFW_KEY_ENTER && (mods & GLFW_MOD_ALT)))) {
+    set_fullscreen(!fullscreen);
+    return;
+  }
   int down = action == GLFW_PRESS, player = controllers_keyboard_player();
   KeyControl controls[KEY_CONTROLS];
   int count = controllers_controls_for(key, controls, KEY_CONTROLS);
@@ -112,8 +154,11 @@ static void stay_awake(void) {
 void window_create(void) {
 #ifdef GX_WITH_VULKAN
   // GLFW looks for the Vulkan loader on its own, and on the Mac it doesn't find
-  // Homebrew's, so it's handed the one the console is linked with.
+  // Homebrew's, so it's handed the one the console is linked with. GLFW 3.3, which
+  // Ubuntu 24.04 still ships, has no such call and finds the system's loader itself.
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
   glfwInitVulkanLoader(vkGetInstanceProcAddr);
+#endif
 #endif
   if (!glfwInit()) { fprintf(stderr, "stop: no window system\n"); exit(10); }
   stay_awake();
@@ -132,6 +177,8 @@ void window_create(void) {
   glfwSetCursorPosCallback(window, on_mouse_move);
   glfwSetMouseButtonCallback(window, on_mouse_button);
   gx_backend->window_ready(window);
+  const char *wanted = getenv("WII_RECOMP_FULLSCREEN");
+  if (wanted && wanted[0] && wanted[0] != '0') set_fullscreen(1);
 }
 
 struct GLFWwindow *window_handle(void) { return window; }
@@ -167,6 +214,7 @@ void window_run(void) {
     pads_poll();
   }
   if (stop_signal) fprintf(stderr, "console: asked to stop (signal %d)\n", (int)stop_signal);
+  else fprintf(stderr, "console: the window was asked to close\n");  // By the window system: its close button, or a program closing it.
   if (power_button_press()) {
     fprintf(stderr, "console: the power button is pressed\n");
     for (double until = glfwGetTime() + POWER_OFF_SECONDS; glfwGetTime() < until;) {

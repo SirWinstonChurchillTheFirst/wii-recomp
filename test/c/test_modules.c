@@ -15,6 +15,7 @@ void interrupts_turned_on(void) {}
 void system_call(uint32_t address) {}
 void trap_taken(uint32_t address) { (void)address; }
 void locked_cache_transfer(void) {}
+void graphics_pipe_reset(void) {}
 uint64_t time_base(void) { return 0; }
 uint64_t guest_time_base(void) { return 0; }
 void guest_time_base_set(int high_half, uint32_t value) {}
