@@ -8,6 +8,7 @@
 #include "debug.h"
 #include "gaps.h"
 #include "gx.h"
+#include "gx_backend.h"
 
 #define DEPTH_MAX 16777215.0f
 
@@ -343,6 +344,10 @@ static void read_depth(TevKey *key, TevValues *values, int last_map) {
     if (!gx_frozen_plane_known) {
       // The run's first frozen draws, until a triangle has been drawn with the plane being kept.
       gap_hit("pixel.z_freeze", Z_FREEZE_BIT);
+    } else if (gx_backend && !strcmp(gx_backend->name, "opengl")) {
+      // The plane counts rows from the top of the picture, as Vulkan's gl_FragCoord does.
+      // OpenGL's counts from the bottom, which would tilt the plane the wrong way.
+      debug_unsupported("pixel.z_freeze", "frozen depth on OpenGL, whose rows count from the bottom", 0);
     } else {
       if (chosen != DEPTH_OFF && !tests_depth_early()) debug_unsupported("pixel.z_freeze", "frozen depth with a depth texture as well", chosen);
       key->depth_mode = DEPTH_FROZEN;
