@@ -155,12 +155,14 @@ int files_system_setting(const char *name, uint8_t *out, size_t limit) {
 }
 
 // Changes a one-byte item of the system settings file in the save folder, before a game
-// has opened it. 1 if the item is there and now holds the value.
+// has opened it. 1 if the item is there and now holds the value. 0 once a game has the
+// file open: its copy is what files_system_setting reads, and would be written back over
+// this.
 int files_system_setting_set(const char *name, uint8_t value) {
   char full[MAX_PATH];
   uint8_t data[0x4000];
   size_t bytes = 0, length = strlen(name);
-  if (!files_find(SETTINGS_FILE, full, sizeof full)) return 0;
+  if (open_contents(SETTINGS_FILE) || !files_find(SETTINGS_FILE, full, sizeof full)) return 0;
   FILE *file = fopen(full, "rb");
   if (file) {
     bytes = fread(data, 1, sizeof data, file);

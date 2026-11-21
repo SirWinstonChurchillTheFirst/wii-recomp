@@ -1,5 +1,7 @@
+import io
 import sys
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "recomp/translate"))
@@ -124,6 +126,24 @@ class Resolving(unittest.TestCase):
         entries = [entry("scheduler", self.TARGET, idle_offset=8)]
         _, idle_loops, _ = self.resolve({0x5000: self.TARGET}, entries)
         self.assertEqual(idle_loops, {})
+
+    def test_an_exact_only_entry_isnt_found_by_resemblance(self):
+        # setjmp and longjmp look like many small functions: only their own hashes will do.
+        words = Similarity.WORDS
+        changed = list(words)
+        changed[3] = NOP
+        loose = [entry("jump", words, group="optional", body="")]
+        self.assertEqual(list(self.resolve({0x5000: changed}, loose)[0]), [0x5000])  # Found as it resembles it.
+        exact = [entry("jump", words, group="optional", exact_only=True, body="")]
+        self.assertEqual(self.resolve({0x5000: changed}, exact)[0], {})
+        self.assertEqual(list(self.resolve({0x5000: words}, exact)[0]), [0x5000])
+
+    def test_a_missing_warn_only_entry_warns_and_the_build_goes_on(self):
+        entries = [entry("panic", self.TARGET, warn_only=True, body="guest_panic();")]
+        with redirect_stderr(io.StringIO()) as said:
+            replaced, _, _ = self.resolve({0x9000: [BLR]}, entries)
+        self.assertEqual(replaced, {})
+        self.assertIn("panic not found", said.getvalue())
 
 
 class Similarity(unittest.TestCase):

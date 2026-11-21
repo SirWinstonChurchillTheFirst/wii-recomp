@@ -45,10 +45,15 @@ enum { COMMAND_REQUEST = 0x80001000u, EVENTS_REQUEST = 0x80001200u, DATA_REQUEST
        ENDPOINT = 0x80002100u, EVENT = 0x80003000u, BUFFER = 0x80003400u };
 static const uint8_t remote[6] = {0x01, 0x00, 0x1f, 0x19, 0x00, 0x00};
 static int pending[2], ready[2];
+// The test of reads held open at once uses requests of its own, logged as they complete.
+enum { HELD_READS = 0x80005000u, HELD_READ_BYTES = 0x400 };
+static uint32_t completed[8];
+static int completed_count;
 
 void ios_complete(uint32_t request, int result) {
   if (request == EVENTS_REQUEST) ready[0] = 1;
   if (request == DATA_REQUEST) ready[1] = 1;
+  if (request >= HELD_READS && completed_count < 8) completed[completed_count++] = request;
 }
 
 static void set_up(uint32_t request, uint32_t code, uint32_t vector, uint32_t address, uint32_t bytes) {
@@ -88,6 +93,44 @@ static int collect(int endpoint) {
 }
 
 static int event(void) { return collect(0x81) ? rd8(EVENT) : 0; }
+
+// Holds an events read open at its own place, as a game may hold several.
+static uint32_t open_events_read(int n) {
+  uint32_t request = HELD_READS + (uint32_t)n * HELD_READ_BYTES;
+  set_up(request, 2, 2, request + 0x200, 0x100);
+  wr32(request + 0x100, ENDPOINT & 0x7fffffff);
+  wr8(ENDPOINT, 0x81);
+  bluetooth_request(IOS_IOCTLV, request);
+  return request;
+}
+
+// IOS queues the reads a game holds open, and answers them first in, first out. With room
+// for one, each new read replaced the last, which never came back (Mario Party 9 holds
+// several). A read already waiting isn't queued again, and closing the chip's handle
+// drops them all.
+static void test_held_reads(void) {
+  const uint8_t none[1] = {0};
+  bluetooth_closed();
+  pending[0] = pending[1] = 0;
+  uint32_t first = open_events_read(0), second = open_events_read(1);
+  open_events_read(0);
+  CHECK_EQ(completed_count, 0);
+  command(0x1009, none, 0);  // Read the chip's address: one event.
+  CHECK_EQ(completed_count, 1);
+  CHECK_EQ(completed[0], first);
+  command(0x1009, none, 0);
+  CHECK_EQ(completed_count, 2);
+  CHECK_EQ(completed[1], second);
+  command(0x1009, none, 0);  // Nothing open: the event waits.
+  CHECK_EQ(completed_count, 2);
+  uint32_t third = open_events_read(2);
+  CHECK_EQ(completed_count, 3);
+  CHECK_EQ(completed[2], third);
+  open_events_read(0);
+  bluetooth_closed();
+  command(0x1009, none, 0);
+  CHECK_EQ(completed_count, 3);
+}
 
 // The console sends the remote an L2CAP signal on its connection.
 static void send_signal_to_remote(int code, int id, const uint8_t *body, uint32_t bytes) {
@@ -205,5 +248,6 @@ int main(void) {
   CHECK(!memcmp(host(EVENT + 12), closing, sizeof closing));
   wii_remote_update(0, 1000000000);
   CHECK(!collect(0x82));
+  test_held_reads();
   return finish();
 }

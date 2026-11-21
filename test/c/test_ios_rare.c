@@ -219,5 +219,22 @@ int main(void) {
   CHECK_EQ(rd32(OUT), 2);
   make_ioctl(REQUEST, 0x88, IN, 0x20, OUT, 2);
   CHECK_EQ(dvd_request(IOS_IOCTL, REQUEST), 32);
+
+  // DI Seek: done at once with a disc in, as an image reads as fast anywhere; an error
+  // without one.
+  make_ioctl(REQUEST, 0xab, IN, 0x20, 0, 0);
+  CHECK_EQ(dvd_request(IOS_IOCTL, REQUEST), 1);
+  disc_in = 0;
+  CHECK_EQ(dvd_request(IOS_IOCTL, REQUEST), 2);
+  disc_in = 1;
+
+  // DI ReadDiskBca: what an image, which holds no burst cutting area, reads as: zeros with
+  // a 1 at 0x33. A security error with no room for its 64 bytes.
+  for (uint32_t i = 0; i < 0x40; i++) wr8(OUT + i, 0xff);
+  make_ioctl(REQUEST, 0xda, IN, 0x20, OUT, 0x40);
+  CHECK_EQ(dvd_request(IOS_IOCTL, REQUEST), 1);
+  for (uint32_t i = 0; i < 0x40; i++) CHECK_EQ(rd8(OUT + i), i == 0x33 ? 1u : 0u);
+  make_ioctl(REQUEST, 0xda, IN, 0x20, OUT, 0x20);
+  CHECK_EQ(dvd_request(IOS_IOCTL, REQUEST), 32);
   return finish();
 }

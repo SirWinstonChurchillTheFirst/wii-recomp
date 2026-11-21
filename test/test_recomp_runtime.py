@@ -142,12 +142,15 @@ class Runtime(unittest.TestCase):
         (saves / "kept").write_text("beside /tmp")
         before = tree(storage)
         self.build_and_run([HERE / "c/test_system_files.c", RUNTIME / "system_files.c", RUNTIME / "fs.c",
-                            RUNTIME / "files.c", RUNTIME / "gaps.c"], storage, saves)
+                            RUNTIME / "files.c", RUNTIME / "gaps.c", RUNTIME / "wc24.c"], storage, saves)
         self.assertEqual(tree(storage), before)
         # IOS empties /tmp as it starts, and only /tmp.
         self.assertTrue((saves / "tmp").is_dir())
         self.assertEqual(list((saves / "tmp").iterdir()), [])
         self.assertEqual((saves / "kept").read_text(), "beside /tmp")
+
+    def test_low_memory_a_disc_starts_with(self):
+        self.build_and_run([HERE / "c/test_loader.c", RUNTIME / "loader.c"])
 
     def test_modules_loaded_at_run_time(self):
         sources = [HERE / "c/test_modules.c", RUNTIME / "dispatch.c", RUNTIME / "interp.c", RUNTIME / "quantized.c", RUNTIME / "profile.c"]
