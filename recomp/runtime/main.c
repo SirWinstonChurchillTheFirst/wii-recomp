@@ -37,6 +37,31 @@ Cpu cpu;
 
 #define STACK_BYTES (1024u * 1024u * 1024u)
 
+// PC builds are compiled for x86-64-v3 (build_file.py): AVX2, FMA and BMI, which Intel's
+// Haswell, AMD's Zen and later have. On an older processor the first such instruction would
+// end the program with no word of why, and a .wrd image carries the code built on another
+// computer. So this looks first, before anything built that way runs, and is built for the
+// plain x86-64 baseline itself.
+#if defined(__x86_64__) && !defined(__APPLE__)
+#include <cpuid.h>
+__attribute__((constructor(101), target("arch=x86-64"))) static void check_processor(void) {
+  unsigned a, b, c, d, low, high;
+  int avx = 0, fma = 0, avx2 = 0, bmi = 0;
+  if (__get_cpuid(1, &a, &b, &c, &d)) {
+    fma = (c >> 12) & 1;
+    if (((c >> 27) & 1) && ((c >> 28) & 1)) {  // The system saves AVX registers, and there are some.
+      __asm__("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
+      avx = (low & 6) == 6;
+    }
+  }
+  if (__get_cpuid_count(7, 0, &a, &b, &c, &d)) avx2 = (b >> 5) & 1, bmi = ((b >> 3) & 1) && ((b >> 8) & 1);
+  if (avx && avx2 && fma && bmi) return;
+  fprintf(stderr, "stop: this build needs a processor with AVX2, FMA and BMI (Intel Haswell, AMD Zen or later); this one lacks%s%s%s%s\n",
+          avx ? "" : " AVX", avx2 ? "" : " AVX2", fma ? "" : " FMA", bmi ? "" : " BMI");
+  exit(1);
+}
+#endif
+
 static void print_guest_text(uint32_t address) {
   for (int i = 0; i < 400; i++) {
     uint32_t c = rd8(address + (uint32_t)i);
