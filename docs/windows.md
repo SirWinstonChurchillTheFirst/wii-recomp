@@ -36,6 +36,9 @@ shaderc, the C++ runtime), until they're copied beside it.
 - **Threads.** There's no ucontext, and the calling convention keeps more registers, so
   `threads.c` has its own save and resume for Win64. Each guest thread's host stack is
   reserved whole and grows through a guard page, by the bounds kept in the TEB.
+- **Graphics commands** run on a thread of their own, as on the Mac and Linux, through a
+  ring mapped twice in a row with placeholders (`VirtualAlloc2`, `MapViewOfFile3`, from
+  Windows 10 1803 on). Short sleeps use a high-resolution waitable timer.
 - **Sound** goes out through SDL3 (`audio_output_win.c`).
 - **The control pipe** (`WII_RECOMP_CONTROL`) is a Windows named pipe: `wii` is
   `\\.\pipe\wii`.
@@ -44,6 +47,6 @@ shaderc, the C++ runtime), until they're copied beside it.
 ## Not there yet
 
 - The network (`net_win.c` answers that there's no link).
-- Real Wii Remotes (`remote_link_win.c` is empty; the simulated remote is used).
-- (Done) Graphics commands run on a thread of their own, through a ring mapped twice with placeholders.
+- Real Wii Remotes (`remote_link_win.c` reads none; the simulated remote is used, and
+  `WII_RECOMP_REMOTES=real` says none will connect).
 - The Wii Menu's hand-over between titles, which uses `exec`.

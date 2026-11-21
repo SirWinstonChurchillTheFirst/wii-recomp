@@ -5,7 +5,7 @@
 **The Wii console, rebuilt as native software.**
 
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Platforms: macOS, Raspberry Pi 5](https://img.shields.io/badge/platforms-macOS%20%7C%20Raspberry%20Pi%205-lightgrey)](#build-and-run)
+[![Platforms: macOS, Raspberry Pi 5, Windows](https://img.shields.io/badge/platforms-macOS%20%7C%20Raspberry%20Pi%205%20%7C%20Windows-lightgrey)](#build-and-run)
 [![Graphics: Vulkan](https://img.shields.io/badge/graphics-Vulkan-lightgrey)](recomp/README.md)
 
 [What runs today](#what-runs-today) · [How it works](#how-it-works) · [Build and run](#build-and-run) · [Roadmap](ROADMAP.md)
@@ -51,13 +51,13 @@ flowchart LR
 
 The game's own code, its operating system and thread scheduler included, runs almost unchanged.
 
-A build produces two files. `wii-recomp` is the console, the same program for every title. `title.dylib` (`title.so` on Linux) holds one game's translated code, and the console loads it.
+A build produces two files. `wii-recomp` is the console, the same program for every title. `title.dylib` (`title.so` on Linux, `title.dll` on Windows) holds one game's translated code, and the console loads it.
 
 ## Build and run
 
 Wii Recomp doesn't ship games or Nintendo's software. You bring your own, and everything is translated and compiled on your own computer:
 
-- **A computer:** a Mac (developed on an Intel Mac) or a Raspberry Pi 5 with Raspberry Pi OS.
+- **A computer:** a Mac (developed on an Intel Mac), a Raspberry Pi 5 with Raspberry Pi OS, or a Windows 10 or 11 PC with a Vulkan graphics card ([`docs/windows.md`](docs/windows.md) has its tools and what's different there). A Windows or Linux PC needs a processor from Intel's Haswell or AMD's Zen on, as its build uses their instructions.
 - **Your Wii's storage:** a NAND backup from your own Wii, which holds the Wii Menu and the console's settings.
 - **Your game discs,** as ISO, RVZ or WBFS files you made from them.
 
@@ -74,6 +74,8 @@ brew install ninja glfw molten-vk vulkan-loader shaderc sdl3
 # Raspberry Pi OS
 sudo apt install clang ninja-build python3 libglfw3-dev libvulkan-dev mesa-vulkan-drivers libshaderc-dev libasound2-dev
 recomp/tools/sdl3_setup.sh   # SDL3 new enough for Switch 2 controllers; --prefix ~/.local needs no root
+
+# Windows: MSYS2's CLANG64 packages, see docs/windows.md
 ```
 
 On a Mac you can install the LunarG Vulkan SDK instead, and set `VULKAN_SDK` to its folder. `import_nand.py` also needs Python's `cryptography` package (`python3 -m pip install cryptography`).
@@ -97,9 +99,9 @@ python3 recomp/tools/add_game.py "path/to/game.rvz"
 recomp/build/wii-recomp games/<game ID>.wrd
 ```
 
-`add_game.py` extracts the disc, translates all of its code, builds the console if it isn't built yet, compiles the game and packs it as `games/<game ID>.wrd`. It also takes an extracted disc folder. The game's own Wii Remote code runs, against a simulated remote with a Nunchuk plugged in, which every game that uses the pointer accepts. F2 swaps it for a Classic Controller, or nothing, while playing, and `controllers.ini` beside the console sets each player's controls. On a Raspberry Pi 5, a game can go from an extracted disc to a playable image in under a minute and a half, where compiling it all for speed takes several times as long.
+`add_game.py` extracts the disc, translates all of its code, builds the console if it isn't built yet, compiles the game and packs it as `games/<game ID>.wrd`. It also takes an extracted disc folder. The game's own Wii Remote code runs, against a simulated remote with a Nunchuk plugged in, which every game that uses the pointer accepts. F2 swaps it for a Classic Controller, or nothing, while playing, and `controllers.ini` beside the console sets each player's controls. F11 or Alt+Enter switches to full screen on the monitor the window is on, and `WII_RECOMP_FULLSCREEN=1` starts there. All of the game's code is compiled for speed from the first build, so code that runs for the first time in play doesn't stutter. That makes the first build slower than it was: Super Mario Galaxy 2 takes about two and a half minutes on an 8-core Intel Mac, and a Raspberry Pi 5 takes longer still.
 
-The first build compiles everything quickly, and the game counts how often each part of it runs while you play. Run the same command again, or `add_game.py <game ID>`, and the parts that did the work are compiled for speed. Only those files are compiled again, and the image's native code is swapped without copying the disc. Counts from every run add up, so the build keeps up with what you play. Each game builds in `recomp/build-<game ID>/`, and any code that had to run on the interpreter is translated by the next build.
+The first build also counts how often each part of the game runs while you play. Run the same command again, or `add_game.py <game ID>`, and every part that ran is built without the counting. Only those files are compiled again, and the image's native code is swapped without copying the disc. Counts from every run add up, so the build keeps up with what you play. Each game builds in `recomp/build-<game ID>/`, and any code that had to run on the interpreter is translated by the next build.
 
 The console draws every picture at twice the Wii's size. A game too heavy for a small graphics chip at that size can be built with its own, such as `add_game.py <game ID> --scale 3/2`, which is remembered for later builds; `--scale default` goes back to the console's. `WII_RECOMP_SCALE` still overrides it for a run.
 
@@ -145,7 +147,7 @@ recomp/build/wii-recomp --console console
 
 `add_game.py` builds every game with `--virtual-bluetooth`, so the same image plays directly and from the menu. With `--console` it also reads the counts from games started from that console's menu, and moves any other disc in the drive to the console's `shelf/` folder.
 
-A **`.wrd` disc image** is a game prepared for the console: the disc's files, unencrypted, plus the game's translated code for each computer it was built for (`darwin-x86_64` on an Intel Mac, `linux-aarch64` on a Pi). The console reads it like a disc in its drive. It holds the game, so it's yours alone: don't share it.
+A **`.wrd` disc image** is a game prepared for the console: the disc's files, unencrypted, plus the game's translated code for each computer it was built for (`darwin-x86_64` on an Intel Mac, `linux-aarch64` on a Pi, `windows-x86_64` and `linux-x86_64` on a PC). The console reads it like a disc in its drive. It holds the game, so it's yours alone: don't share it.
 
 The menu shows the game's banner in the Disc Channel, and Start runs it. Home, then Wii Menu, goes back. The simulated Wii Remote has a Nunchuk plugged in. A game that sees a Classic Controller may hide its pointer, so plug one in (F2) only for games played with it. The console stays a single program: when you start a game, it restarts itself with the game's code, as a Wii does.
 

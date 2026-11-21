@@ -11,10 +11,10 @@ title's native code, and packs both into games/<game ID>.wrd. Play it with
 `recomp/build/wii-recomp games/<game ID>.wrd`, or give --console to put it in that
 console's drive for the Wii Menu (recomp/tools/prepare_console.py makes one).
 
-The first build compiles everything quickly, and the code counts how often it runs.
-Run add_game.py again after playing (with the game ID, the disc or the folder) and the
-code that did the work is compiled for speed, using what every run so far recorded:
-the profile and any code the interpreter had to run. Only what changed is rebuilt, and
+The first build compiles everything for speed, and the code counts how often it runs.
+Run add_game.py again after playing (with the game ID, the disc or the folder) and every
+function that ran is built without the counting, using what every run so far recorded:
+the profile and any code the interpreter had to run, which is translated then. Only what changed is rebuilt, and
 the image's native code is swapped without copying the disc again. The image also
 carries the shaders every run drew with, as recipes any computer builds before the
 first picture, so they don't hold up frames during play.
@@ -319,7 +319,7 @@ def main():
             install(build, disc, key, console)
         print(f"\n{key} is ready in {time.monotonic() - started:.0f} s. Start it from the Wii Menu, or with:\n"
               f"  {CONSOLE_BUILD.relative_to(ROOT) / PROGRAM} --console <console> --title {key}\n"
-              "Run this again after playing to compile the code that ran most for speed.")
+              "Run this again after playing to add what the game ran: code it found and the shaders it drew with.")
         return
     if options.no_pack:
         print(f"\n{code} is built in {build / LIBRARY}: {time.monotonic() - started:.0f} s in all")
@@ -340,7 +340,7 @@ def main():
         insert(image, console)
     print(f"\n{code} is ready in {time.monotonic() - started:.0f} s. Play it with:\n"
           f"  {CONSOLE_BUILD.relative_to(ROOT) / PROGRAM} {image.relative_to(ROOT)}\n"
-          "Run this again after playing to compile the code that ran most for speed.")
+          "Run this again after playing to add what the game ran: code it found and the shaders it drew with.")
 
 
 if __name__ == "__main__":
