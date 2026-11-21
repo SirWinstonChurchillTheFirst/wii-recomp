@@ -177,6 +177,20 @@ class Runtime(unittest.TestCase):
         self.build_and_run([HERE / "c" / sources[0]] + [RUNTIME / name for name in sources[1:]], storage, saves, disc / "sys")
 
 
+class ExitTasks(unittest.TestCase):
+    def test_power_off_does_what_exit_would(self):
+        # The console's power-off ends the program with _exit, which runs no atexit
+        # handlers, so it calls each one itself (console.c). One left out there was the
+        # local server left running after the window closed.
+        registered = {name: source.name for source in RUNTIME.glob("*.c")
+                      for name in re.findall(r"\batexit\((\w+)\)", source.read_text())}
+        self.assertGreaterEqual(len(registered), 5)
+        console = (RUNTIME / "console.c").read_text()
+        power_off = re.search(r"void console_power_off\(const char \*how\) \{(.*?)\n\}", console, re.S).group(1)
+        missing = {name: source for name, source in registered.items() if not re.search(rf"\b{name}\(\);", power_off)}
+        self.assertEqual(missing, {})
+
+
 def tmd(title, contents, ios=0x0000000100000050, version=0x1234, boot=1):
     """A made-up TMD: header fields only, no real signature. contents: (id, index, type, data)."""
     header = bytearray(0x1e4)

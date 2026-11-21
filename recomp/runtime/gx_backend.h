@@ -180,6 +180,8 @@ void gx_recipes_start(void);
 extern const GxBackend *gx_backend;
 extern int gx_shows_held;  // Set once something calls show_held between commands, so a backend may hold pictures.
 extern const GxBackend gx_backend_opengl, gx_backend_vulkan;
+// Writes the Vulkan driver's pipeline cache now, if one is kept (gx_vulkan_pipeline.c).
+void gx_vulkan_save_cache(void);
 
 // Picks from WII_RECOMP_RENDERER (opengl or vulkan), once GLFW has started.
 void gx_backend_choose(void);

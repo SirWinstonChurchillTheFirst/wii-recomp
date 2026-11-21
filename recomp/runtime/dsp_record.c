@@ -155,7 +155,7 @@ void dsp_record_control(uint16_t value) {
   put(&value, 2);
 }
 
-static void finish_at_exit(void) {
+void dsp_record_end(void) {
   if (dsp_recording) finish();
 }
 
@@ -190,7 +190,7 @@ static void begin(const char *to, uint64_t frames, int from_boot) {
   dsp_lle_observe_mail(on_mail, on_interrupt);
   dsp_recording = 1;
   static int at_exit;
-  if (!at_exit) at_exit = !atexit(finish_at_exit);
+  if (!at_exit) at_exit = !atexit(dsp_record_end);
   fprintf(stderr, "record-sound: recording %llu frames to %s\n", (unsigned long long)frames, path);
 }
 

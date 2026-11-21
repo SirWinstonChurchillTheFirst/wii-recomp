@@ -22,6 +22,7 @@ int net_socket_connected(uint32_t fd);
 void net_remember_program(const char *program);  // Where the console runs from, to find the server.
 uint32_t net_route_name(const char *name);       // A made-up address for a name served here, or 0.
 int net_route_address(uint32_t address, uint16_t port, struct sockaddr_in *out);  // Where it really goes.
+void net_stop_local_server(void);  // Ends the local server this console started, if it did. At exit and power-off.
 
 // The console's own certificate authority (net_routes.c), made the first time it's
 // needed, in WII_RECOMP_CERTIFICATES. Its entry for Opera's list, malloc'd, or 0.

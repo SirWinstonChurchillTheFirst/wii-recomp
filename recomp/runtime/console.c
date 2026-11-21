@@ -11,9 +11,12 @@
 
 #include "console.h"
 #include "drive.h"
-#include "ios.h"
-#include "profile.h"
+#include "dsp_record.h"
 #include "gaps.h"
+#include "gx_backend.h"
+#include "ios.h"
+#include "net.h"
+#include "profile.h"
 #include "remote_link.h"
 #include "title.h"
 
@@ -154,15 +157,15 @@ void console_remember(char **arguments) { started_with = arguments; }
 // What the program keeps is written here, by name, and the program then ends at once:
 // exit() would also take apart the graphics driver and the window system while the
 // commands thread and the window still use them, which crashed on Linux after
-// everything was saved.
-#ifdef GX_WITH_VULKAN
-void gx_vulkan_save_cache(void);
-#endif
+// everything was saved. _exit runs no atexit handlers, so each one the runtime registers
+// is called here too (test_recomp_runtime.py checks none is missing).
 void console_power_off(const char *how) {
   fprintf(stderr, "console: turning %s\n", how);
   files_save_all();
   profile_save();
   gap_flush();
+  dsp_record_end();
+  net_stop_local_server();
 #ifdef GX_WITH_VULKAN
   gx_vulkan_save_cache();
 #endif

@@ -184,8 +184,9 @@ static void *read_whole(const char *name, size_t *bytes) {
   return data;
 }
 
-// Written beside, then renamed over, so a reader never sees half a file.
-static void save_driver_cache(void) {
+// Written beside, then renamed over, so a reader never sees half a file. Every few seconds,
+// at exit and at the console's power-off, which ends the program without exit handlers.
+void gx_vulkan_save_cache(void) {
   pthread_mutex_lock(&save_lock);
   if (cache_folder[0] && __atomic_exchange_n(&driver_changed, 0, __ATOMIC_ACQ_REL)) {
     size_t bytes = 0;
@@ -210,13 +211,10 @@ static void *keep_saving(void *unused) {
   (void)unused;
   for (;;) {
     sleep(SAVE_EVERY_SECONDS);
-    save_driver_cache();
+    gx_vulkan_save_cache();
   }
   return 0;
 }
-
-// For the console's power-off, which ends the program without exit handlers.
-void gx_vulkan_save_cache(void) { if (cache_folder[0]) save_driver_cache(); }
 
 static void open_cache(void) {
   const char *folder = getenv("WII_RECOMP_SHADER_CACHE");
@@ -227,7 +225,7 @@ static void open_cache(void) {
     return;
   }
   snprintf(cache_folder, sizeof cache_folder, "%s", folder);
-  atexit(save_driver_cache);
+  atexit(gx_vulkan_save_cache);
   pthread_t saver;
   pthread_create(&saver, 0, keep_saving, 0);
   pthread_detach(saver);

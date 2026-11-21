@@ -50,5 +50,6 @@ int net_socket_connected(uint32_t fd) { (void)fd; return 0; }
 void net_remember_program(const char *program) { (void)program; }
 uint32_t net_route_name(const char *name) { (void)name; return 0; }
 int net_route_address(uint32_t address, uint16_t port, struct sockaddr_in *out) { (void)address; (void)port; (void)out; return 0; }
+void net_stop_local_server(void) {}  // None is started here.
 uint8_t *net_opera_entry(long *bytes) { (void)bytes; return 0; }
 #endif
