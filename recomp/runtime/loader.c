@@ -137,12 +137,12 @@ void set_up_low_memory(const Boot *boot) {
   uint8_t settings[0x100];
   if (console_settings_raw(settings)) memcpy(host(0x80003800u), settings, sizeof settings);  // As the system menu leaves it.
   // The TV standard, which the system menu leaves here from the console's settings and
-  // the SDK's VIInit and VIConfigure hold a game to: 0 is NTSC, 1 PAL, 5 EuRGB60 (a PAL
-  // console set to 60 Hz, IPL.E60). A console's own setting.txt says which (VIDEO);
-  // without one it follows the disc's region letter, as Dolphin's boot does. Left at
-  // NTSC, VIConfigure stops a PAL game that asks for a PAL or EuRGB60 mode. The video
-  // registers themselves stay as they are: an EuRGB60 console's say NTSC timing, which is
-  // what VIInit expects to find beside the 5 here.
+  // the SDK's VIInit and VIConfigure hold a game to: 0 is NTSC, 1 PAL. A console's own
+  // setting.txt says which (VIDEO); without one it follows the disc's region letter, as
+  // Dolphin's boot does. Left at NTSC, VIConfigure stops a PAL game that asks for a PAL or
+  // EuRGB60 mode. Like Dolphin's boot, this writes only 0 or 1: a PAL console set to 60 Hz
+  // says so with IPL.E60 in its settings, which is where the SDK looks for EuRGB60, and
+  // the video registers keep the NTSC timing such a console runs at.
   char video[8];
   uint8_t sixty = 1;
   int pal = !strchr("EJKW", (char)boot->header[3]);

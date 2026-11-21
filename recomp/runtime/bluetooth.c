@@ -132,6 +132,14 @@ static int device_by_address(const uint8_t *address) {
 
 static void next_device_calls(void);
 
+// WII_RECOMP_BLUETOOTH_LOG: every event, command and packet. Read once, as data comes many
+// times a frame.
+static int logging(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("WII_RECOMP_BLUETOOTH_LOG") != 0;
+  return on;
+}
+
 static Packet packets[MAX_PACKETS];
 static int packet_count;
 // Reads the game keeps open until there's something to send, in the order it made them. IOS
@@ -179,7 +187,7 @@ static void send_events(void) {
 
 static void queue_event(int code, const uint8_t *parameters, uint32_t bytes) {
   if (event_count == MAX_EVENTS) { fprintf(stderr, "stop: bluetooth: too many events waiting\n"); exit(11); }
-  if (getenv("WII_RECOMP_BLUETOOTH_LOG")) fprintf(stderr, "bluetooth event %02x, %u bytes\n", code, bytes);
+  if (logging()) fprintf(stderr, "bluetooth event %02x, %u bytes\n", code, bytes);
   Event *event = &events[event_count++];
   event->bytes[0] = (uint8_t)code;
   event->bytes[1] = (uint8_t)bytes;
@@ -206,17 +214,13 @@ static void send_data(void) {
     uint32_t address, bytes, request = take_waiting(&waiting_data);
     vector_at(request, 2, &address, &bytes);
     for (uint32_t i = 0; i < packets[0].size && i < bytes; i++) wr8(guest(address) + i, packets[0].bytes[i]);
-    if (getenv("WII_RECOMP_BLUETOOTH_LOG") && is_data_report(&packets[0])) {
+    if (logging() && is_data_report(&packets[0])) {
       static uint8_t delivered[2];
       if (packets[0].bytes[10] != delivered[0] || packets[0].bytes[11] != delivered[1]) {
         fprintf(stderr, "bluetooth: the game collected buttons %02x%02x, %d still waiting\n", packets[0].bytes[11], packets[0].bytes[10], packet_count - 1);
         delivered[0] = packets[0].bytes[10];
         delivered[1] = packets[0].bytes[11];
       }
-    }
-    if (getenv("WII_RECOMP_BLUETOOTH_LOG")) {
-      static unsigned delivered_count;
-      if (++delivered_count % 200 == 0) fprintf(stderr, "bluetooth: %u data packets delivered, %d reads open\n", delivered_count, waiting_data.count);
     }
     ios_complete(request, (int)packets[0].size);
     memmove(packets, packets + 1, (size_t)--packet_count * sizeof packets[0]);
@@ -431,7 +435,7 @@ static void run_command(uint32_t address, uint32_t bytes) {
   uint32_t handle = (rd8(parameters) | (uint32_t)rd8(parameters + 1) << 8) & HANDLE_MASK;
   uint8_t named_address[6];
   for (int i = 0; i < 6; i++) named_address[i] = (uint8_t)rd8(parameters + (uint32_t)i);
-  if (getenv("WII_RECOMP_BLUETOOTH_LOG")) fprintf(stderr, "bluetooth command %04x, %u bytes\n", opcode, bytes);
+  if (logging()) fprintf(stderr, "bluetooth command %04x, %u bytes\n", opcode, bytes);
   find_devices();
   if (opcode == OP_READ_BUFFER_SIZE) {
     const uint8_t results[] = {STATUS_OK, ACL_PACKET_BYTES & 255, ACL_PACKET_BYTES >> 8, SCO_PACKET_BYTES, ACL_PACKETS, 0, SCO_PACKETS, 0};
@@ -623,7 +627,7 @@ int bluetooth_request(uint32_t command, uint32_t request) {
     return IOS_NO_REPLY;
   }
   vector_at(request, 2, &address, &bytes);
-  if (getenv("WII_RECOMP_BLUETOOTH_LOG")) {
+  if (logging()) {
     fprintf(stderr, "bluetooth data out, %u bytes:", bytes);
     for (uint32_t i = 0; i < bytes && i < 24; i++) fprintf(stderr, " %02x", rd8(guest(address) + i));
     fprintf(stderr, "\n");

@@ -297,10 +297,11 @@ int main(int argc, char **argv) {
       double began = now_ms(), began_working = clock_ms(CLOCK_THREAD_CPUTIME_ID), memory_before = memory_ms;
       play_frame(&dff->frames[i]);
       double took = now_ms() - began - (memory_ms - memory_before);
-      stage_frame(0);
+      double worked = clock_ms(CLOCK_THREAD_CPUTIME_ID) - began_working - (memory_ms - memory_before);
+      stage_frame(0);  // After the frame is timed, so its own bookkeeping isn't counted.
       if (i == 0) continue;
       total += took, timed++;
-      working += clock_ms(CLOCK_THREAD_CPUTIME_ID) - began_working - (memory_ms - memory_before);
+      working += worked;
       if (took > slowest) slowest = took;
     }
   }

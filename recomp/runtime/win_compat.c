@@ -30,23 +30,33 @@ void *mmap(void *address, size_t size, int protection, int flags, int file, long
 }
 
 int mprotect(void *address, size_t size, int protection) {
-  if (protection & PROT_WRITE) return VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE) ? 0 : -1;
-  // Taking access away: pages never committed have none already.
+  if (protection & PROT_WRITE) {
+    if (VirtualAlloc(address, size, MEM_COMMIT, PAGE_READWRITE)) return 0;
+    errno = ENOMEM;
+    return -1;
+  }
+  // Read-only or none: committed pages change. Pages never committed have no access and are
+  // left so, as the fault handler commits a page at its first touch (guest_memory.c).
   MEMORY_BASIC_INFORMATION info;
   uint8_t *at = address, *end = at + size;
   while (at < end && VirtualQuery(at, &info, sizeof info)) {
     uint8_t *region_end = (uint8_t *)info.BaseAddress + info.RegionSize;
     if (region_end > end) region_end = end;
     DWORD before;
-    if (info.State == MEM_COMMIT && !VirtualProtect(at, (size_t)(region_end - at), protection & PROT_READ ? PAGE_READONLY : PAGE_NOACCESS, &before)) return -1;
+    if (info.State == MEM_COMMIT && !VirtualProtect(at, (size_t)(region_end - at), protection & PROT_READ ? PAGE_READONLY : PAGE_NOACCESS, &before)) {
+      errno = EACCES;
+      return -1;
+    }
     at = region_end;
   }
   return 0;
 }
 
-int munmap(void *address, size_t size) {
+int munmap(void *address, size_t size) {  // The whole reservation at `address`, as mmap made it.
   (void)size;
-  return VirtualFree(address, 0, MEM_RELEASE) ? 0 : -1;
+  if (VirtualFree(address, 0, MEM_RELEASE)) return 0;
+  errno = EINVAL;
+  return -1;
 }
 
 char *win_realpath(const char *path, char *resolved) {
@@ -128,7 +138,8 @@ int win_nanosleep(const struct timespec *request, struct timespec *remaining) {
 
 #undef rename
 int win_rename(const char *from, const char *to) {
-  if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING)) return 0;
+  // Through to the disk before it returns, as files.c's write, flush, then rename expects.
+  if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 0;
   errno = GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
   return -1;
 }

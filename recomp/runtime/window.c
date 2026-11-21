@@ -77,7 +77,7 @@ static void set_fullscreen(int on) {
 }
 
 static void on_key(GLFWwindow *from, int key, int scancode, int action, int mods) {
-  (void)from; (void)scancode; (void)mods;
+  (void)from; (void)scancode;
   if (action == GLFW_REPEAT) return;
   if (action == GLFW_PRESS && (key == GLFW_KEY_F11 || (key == GLFW_KEY_ENTER && (mods & GLFW_MOD_ALT)))) {
     set_fullscreen(!fullscreen);

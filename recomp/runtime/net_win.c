@@ -12,11 +12,6 @@
 #include "ios.h"
 #include "net.h"
 
-enum {
-  SO_CLOSE = 3, SO_SOCKET = 15, SO_GETHOSTID = 16, SO_STARTUP = 26, SO_CLEANUP = 27, SO_SETINTERFACEOPT = 29,
-  SO_INITINTERFACE = 31, E_BADF = 8, E_NETUNREACH = 40,
-};
-
 int net_ip_request(uint32_t command, uint32_t request) {
   uint32_t code = rd32(request + 12);
   if (command == IOS_IOCTLV) {

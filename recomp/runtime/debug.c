@@ -24,9 +24,12 @@
 #include "gaps.h"
 #include "gx.h"
 
+// The game's OS keeps its live threads in a list from ACTIVE_THREADS, and the one running in
+// CURRENT_THREAD. A thread is its saved context, then the OS's own fields.
 enum {
-  ACTIVE_THREADS = 0x800000dc, THREAD_STATE = 0x2c8, THREAD_NEXT_ACTIVE = 0x2fc, CONTEXT_LR = 0x84,
-  CONTEXT_SRR0 = 0x198, STACK_DEPTH = 20, MAX_THREADS = 32,
+  ACTIVE_THREADS = 0x800000dc, CURRENT_THREAD = 0x800000e4, THREAD_STATE = 0x2c8, THREAD_PRIORITY = 0x2d0,
+  THREAD_BASE_PRIORITY = 0x2d4, THREAD_NEXT_ACTIVE = 0x2fc, CONTEXT_LR = 0x84, CONTEXT_SRR0 = 0x198, STACK_DEPTH = 20,
+  MAX_THREADS = 32,
 };
 
 static int is_guest(uint32_t address) { return (address >= 0x80000000u && address < 0x81800000u) || (address >= 0x90000000u && address < 0x94000000u); }
@@ -38,10 +41,10 @@ void debug_threads(void) {
           hw_read(0xcc003004u, 4), cpu.msr, rd32(0x800000c4), rd32(0x800000c8), hw_read(0xcc00100au, 2));
   for (int n = 0; n < MAX_THREADS && is_guest(thread); n++) {
     // The thread running now has its registers in the processor, not in its context.
-    int running = thread == rd32(0x800000e4);
+    int running = thread == rd32(CURRENT_THREAD);
     uint32_t stack = running ? cpu.r[1] : rd32(thread + 4);
     fprintf(stderr, "thread %08x state %u priority %d (base %d) pc %08x link %08x calls:", thread, rd16(thread + THREAD_STATE),
-            (int)rd32(thread + 0x2d0), (int)rd32(thread + 0x2d4), rd32(thread + CONTEXT_SRR0), rd32(thread + CONTEXT_LR));
+            (int)rd32(thread + THREAD_PRIORITY), (int)rd32(thread + THREAD_BASE_PRIORITY), rd32(thread + CONTEXT_SRR0), rd32(thread + CONTEXT_LR));
     for (int depth = 0; depth < STACK_DEPTH && is_guest(stack); depth++) {
       fprintf(stderr, " %08x", rd32(stack + 4));
       stack = rd32(stack);
@@ -91,8 +94,6 @@ void stage_add(int stage, uint64_t ticks) {
   if (stage == STAGE_IDLE && ticks > longest_idle) longest_idle = ticks;
 }
 
-// WII_RECOMP_FRAME_LOG=1 prints the time since the last frame shown, for each frame, so a
-// tool can tell an even 60 from frames that come in fits (recomp/tools/race_bench.py).
 // A function built with WII_RECOMP_EMIT_TRACE calls this as it starts: who called it, with
 // what, on which of the game's threads, and when (milliseconds). The first 4,000 calls
 // from the count in WII_RECOMP_TRACE_FROM on are printed.
@@ -100,7 +101,7 @@ void debug_trace_call(unsigned address) {
   static long seen, from = -1;
   if (from < 0) from = getenv("WII_RECOMP_TRACE_FROM") ? atol(getenv("WII_RECOMP_TRACE_FROM")) : 0;
   if (seen++ < from || seen > from + 4000) return;
-  fprintf(stderr, "call %08x from %08x r3 %08x r4 %08x thread %08x at %.2f\n", address, cpu.lr, cpu.r[3], cpu.r[4], rd32(0x800000e4),
+  fprintf(stderr, "call %08x from %08x r3 %08x r4 %08x thread %08x at %.2f\n", address, cpu.lr, cpu.r[3], cpu.r[4], rd32(CURRENT_THREAD),
           (double)time_base() / 60750.0);
 }
 
@@ -109,7 +110,7 @@ void debug_trace_call(unsigned address) {
 void stage_shown(void) {
   static uint64_t last;
   static int frame_log = -1;
-  if (frame_log < 0) frame_log = getenv("WII_RECOMP_FRAME_LOG") != 0;
+  if (frame_log < 0) frame_log = getenv("WII_RECOMP_FRAME_LOG") ? atoi(getenv("WII_RECOMP_FRAME_LOG")) : 0;
   if (!frame_log) return;
   uint64_t now = time_base();
   if (last) fprintf(stderr, "shown %.2f\n", (double)(now - last) / 60750.0);
@@ -122,7 +123,7 @@ void stage_shown(void) {
 // as runs of one of the game's own threads (its system's "current thread"): how many
 // samples, then the places most of them fell in, a place being 64 bytes of code. So the
 // line says which of the game's threads had the processor when, and what it was doing.
-enum { MOST_SAMPLES = 2048, SAMPLE_NANOSECONDS = 100000, PLACES_SHOWN = 4, PLACE_SHIFT = 6, SHORT_RUN = 3, CURRENT_THREAD = 0x800000e4 };
+enum { MOST_SAMPLES = 2048, SAMPLE_NANOSECONDS = 100000, PLACES_SHOWN = 4, PLACE_SHIFT = 6, SHORT_RUN = 3 };
 static uintptr_t samples[MOST_SAMPLES];
 static uint32_t sample_threads[MOST_SAMPLES];
 enum { CHAIN_DEPTH = 7, CHAIN_RUN = 20 };
@@ -190,6 +191,14 @@ static int by_place(const void *a, const void *b) {
   return x < y ? -1 : x > y;
 }
 
+// A place as " <file>+<offset> <count>": the program or the title's library, and how far in.
+static void print_place(uintptr_t address, unsigned count) {
+  Dl_info where = {0};
+  const char *file = dladdr((void *)address, &where) && where.dli_fname ? where.dli_fname : "?";
+  const char *name = strrchr(file, '/');
+  fprintf(stderr, " %s+%lx %u", name ? name + 1 : file, (unsigned long)(address - (uintptr_t)where.dli_fbase), count);
+}
+
 // The places most of the samples from first up to last fell in.
 static void print_places(unsigned first, unsigned last) {
   static uintptr_t places[MOST_SAMPLES];
@@ -206,10 +215,7 @@ static void print_places(unsigned first, unsigned last) {
     for (unsigned i = 1; i < different; i++) if (counted[i].count > counted[most].count) most = i;
     if (!different || !counted[most].count) break;
     uintptr_t address = counted[most].place << PLACE_SHIFT;
-    Dl_info where = {0};
-    const char *file = dladdr((void *)address, &where) && where.dli_fname ? where.dli_fname : "?";
-    const char *name = strrchr(file, '/');
-    fprintf(stderr, " %s+%lx %u", name ? name + 1 : file, (unsigned long)(address - (uintptr_t)where.dli_fbase), counted[most].count);
+    print_place(address, counted[most].count);
     counted[most].count = 0;
   }
 }
@@ -236,10 +242,7 @@ static void count_all(unsigned kept) {
     for (unsigned i = 1; i < TABLE_PLACES; i++) if (table[i].count > table[most].count) most = i;
     if (!table[most].count) break;
     uintptr_t address = table[most].place << PLACE_SHIFT;
-    Dl_info where = {0};
-    const char *file = dladdr((void *)address, &where) && where.dli_fname ? where.dli_fname : "?";
-    const char *name = strrchr(file, '/');
-    fprintf(stderr, " %s+%lx %u", name ? name + 1 : file, (unsigned long)(address - (uintptr_t)where.dli_fbase), table[most].count);
+    print_place(address, table[most].count);
     table[most].count = 0;
   }
   fprintf(stderr, "\n");
@@ -279,8 +282,10 @@ void stage_sample_thread(int graphics) { (void)graphics; }
 static void samples_frame(int slow) { (void)slow; }
 #endif
 
+// WII_RECOMP_FRAME_LOG=1 prints the time since the last frame shown, for each frame, so a
+// tool can tell an even 60 from frames that come in fits (recomp/tools/race_bench.py).
 void stage_frame(float gap_ms) {
-  static int frame_log = -1;
+  static int frame_log = -1, slow_samples = -1;
   // WII_RECOMP_FRAME_LOG=2 adds how long the game's thread waited with nothing to do in
   // that frame: what's left of a capped frame, so machines can be compared under the cap.
   if (frame_log < 0) frame_log = getenv("WII_RECOMP_FRAME_LOG") ? atoi(getenv("WII_RECOMP_FRAME_LOG")) : 0;
@@ -290,7 +295,7 @@ void stage_frame(float gap_ms) {
   }
   // 3 adds the game's thread about then (its system's "current thread"), for a game
   // whose pictures come from more than one.
-  else if (frame_log == 3) fprintf(stderr, "frame %.2f thread %08x\n", (double)gap_ms, rd32(0x800000e4));
+  else if (frame_log == 3) fprintf(stderr, "frame %.2f thread %08x\n", (double)gap_ms, rd32(CURRENT_THREAD));
   else if (frame_log) fprintf(stderr, "frame %.2f\n", (double)gap_ms);
   static long switches_before;
   struct rusage usage;
@@ -303,16 +308,15 @@ void stage_frame(float gap_ms) {
             stage_ticks[STAGE_AUDIO] * ms, stage_ticks[STAGE_IDLE] * ms, longest_idle * ms, usage.ru_nivcsw - switches_before,
             stage_ticks[STAGE_HANDED] * ms, notes[NOTE_PEEK], notes[NOTE_POKE], notes[NOTE_BOX], notes[NOTE_TOUCH]);
   }
-  {  // With the samples of every frame, the waits for the graphics thread over ten seconds of frames.
+  if (slow_samples < 0) slow_samples = getenv("WII_RECOMP_SLOW_SAMPLES") != 0;
+  if (slow_samples) {  // With WII_RECOMP_SLOW_SAMPLES, the waits for the graphics thread over ten seconds of frames.
     static uint64_t waited;
     static unsigned kinds[NOTE_COUNT], frames;
     waited += stage_ticks[STAGE_HANDED];
     for (int kind = 0; kind < NOTE_COUNT; kind++) kinds[kind] += notes[kind];
     if (++frames == 600) {
-      if (getenv("WII_RECOMP_SLOW_SAMPLES")) {
-        fprintf(stderr, "waits for graphics in 600 frames: %.1f ms (%u peeks, %u pokes, %u box reads, %u copies touched)\n", waited / 60750.0,
-                kinds[NOTE_PEEK], kinds[NOTE_POKE], kinds[NOTE_BOX], kinds[NOTE_TOUCH]);
-      }
+      fprintf(stderr, "waits for graphics in 600 frames: %.1f ms (%u peeks, %u pokes, %u box reads, %u copies touched)\n", waited / 60750.0,
+              kinds[NOTE_PEEK], kinds[NOTE_POKE], kinds[NOTE_BOX], kinds[NOTE_TOUCH]);
       waited = 0, frames = 0;
       memset(kinds, 0, sizeof kinds);
     }
