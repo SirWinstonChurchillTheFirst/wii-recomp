@@ -889,7 +889,7 @@ def links_between(found):
     return starts
 
 
-def emit_module(module, number, base, out, exports, program_starts, counts, extra_starts=()):
+def emit_module(module, number, base, imports, out, exports, program_starts, counts, extra_starts=()):
     """Translates a run-time-loaded module's code into native functions, wherever it is
     loaded. Writes m<number>_*.c and returns the C for its entry in the module table, or
     None if the module can't be prepared, which leaves it to the interpreter.
@@ -898,7 +898,6 @@ def emit_module(module, number, base, out, exports, program_starts, counts, extr
     runs: functions that did the work compile for speed, the rest quickly, counting runs
     into m<number>_counts."""
     global MODULE
-    imports = module_imports_at(module, base)
     try:
         prepared = modules.prepare(module, base, imports, extra_starts)
     except modules.Unsupported as reason:
@@ -994,11 +993,12 @@ def write_modules(found, out, exports, program_starts, module_counts=None):
         counts = None if module_counts is None else module_counts.get(module.name, {})
         extra = between.get(module.module_id, ()) if module.kind == "rel" else ()
         try:
-            imports = module_imports_at(module, base)
+            imports = module_imports_at(module, base)  # Finds the code section, which can't always be told.
         except modules.Unsupported as reason:
             print(f"{module.name}: left to the interpreter, {reason}")
-            imports = base
-        prefix = emit_module(module, number, base, out, exports, program_starts, counts, extra)
+            imports, prefix = base, None
+        else:
+            prefix = emit_module(module, number, base, imports, out, exports, program_starts, counts, extra)
         # Room for every import stand-in: the module's own, and one per program or module
         # function it branches to, which is at most one per relocation.
         stand_ins = len(module.imports) + len(module.fixed) + len(module.external)

@@ -1,8 +1,12 @@
 """Run-time-loaded modules: reading a made-up RSO and REL, preparing their code, and the C they become."""
+import io
 import struct
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "recomp/translate"))
@@ -174,19 +178,120 @@ class RelModules(unittest.TestCase):
         module = modules.parse_module("rel", bytes(data))
         self.assertTrue(module.external)
         prepared = modules.prepare(module, 0xc0000000, 0xc1000000)
-        # A branch into module 9 gets a stand-in whose target is read from the linked
-        # branch as it runs; an address half, from the immediate the linker wrote.
-        linked_fields = [f for f in prepared.fields.values() if f[0] == "linked"]
-        self.assertTrue(prepared.linked_calls or linked_fields)
-        for number, at in prepared.linked_calls.items():
-            self.assertIn(at & ~3, prepared.relocated_words)
-            self.assertGreaterEqual(number, len(module.imports))
+        # The call at 0 into module 9 gets a stand-in whose target is read from the linked
+        # branch as it runs; the address halves at 0xc and 0x10, from the immediate the
+        # linker wrote. All three are left out of the identity check.
+        self.assertEqual(prepared.linked_calls, {len(module.imports): 0})
+        self.assertEqual(sorted(at for kind, _, _, at in prepared.fields.values() if kind == "linked"), [12, 16])
+        self.assertLessEqual({0, 12, 16}, prepared.relocated_words)
+        self.assertEqual(prepared.fixed_calls, {})
+
+    def test_links_between_modules_are_function_starts(self):
+        # Module 9's call into module 5's code, at 0x18: a function there even though
+        # nothing inside module 5 leads to it. Its address halves point at data, not code.
+        data = bytearray(made_up_rel())
+        struct.pack_into(">I", data, 0, 9)                                     # Module 9,
+        struct.pack_into(">II", data, 0x2e0, 9, 0x300)                         # with its own list,
+        struct.pack_into(">I", data, 0x2e8, 5)                                 # and its other one into module 5.
+        struct.pack_into(">HBBI", data, 0x348, 0, modules.REL24, 1, 0x18)
+        found = [("five.rel", self.module), ("nine.rel", modules.parse_module("rel", bytes(data)))]
+        self.assertEqual(emit.links_between(found), {5: {0x18}})
 
     def test_yaz0(self):
         # "abc" as literals, then a copy of 6 from 3 back: "abcabcabc".
         packed = b"Yaz0" + struct.pack(">I", 9) + bytes(8) + bytes([0xe0]) + b"abc" + bytes([0x40, 0x02])
         self.assertEqual(modules.yaz0_decompress(packed), b"abcabcabc")
         self.assertEqual(modules.decompress(b"plain"), b"plain")
+
+
+class ModulePlacement(unittest.TestCase):
+    """Where write_modules puts each module's code and import stand-ins, one after another."""
+
+    def place(self, found):
+        placed = []
+
+        def emit_module(module, number, base, imports, *rest):
+            placed.append((number, base, imports))
+            return f"m{number}"
+
+        with tempfile.TemporaryDirectory() as out, mock.patch.object(emit, "emit_module", emit_module), \
+                redirect_stdout(io.StringIO()) as said:
+            count = emit.write_modules(found, Path(out), {}, set())
+            written = (Path(out) / "modules.c").read_text()
+        return count, placed, written, said.getvalue()
+
+    def test_modules_follow_one_another(self):
+        first, second = modules.parse_module("rel", made_up_rel()), modules.parse_module("rel", made_up_rel())
+        count, placed, written, _ = self.place([("a.rel", first), ("b.rel", second)])
+        self.assertEqual(count, 2)
+        (_, base0, imports0), (_, base1, imports1) = placed
+        self.assertEqual(base0, emit.MODULE_BASE)
+        code_bytes = first.sections[first.code_section()][1]
+        self.assertEqual(imports0, emit.align_up(base0 + code_bytes, emit.MODULE_ALIGN))  # Just after its code.
+        stand_ins = len(first.imports) + len(first.fixed) + len(first.external)
+        self.assertGreaterEqual(base1, imports0 + 4 * stand_ins)  # Past every stand-in the first may need.
+        self.assertEqual(base1 % emit.MODULE_ALIGN, 0)
+        self.assertIn("&m0_module, &m1_module", written)
+
+    def test_a_module_that_cant_be_placed_is_left_to_the_interpreter(self):
+        # Code in two sections: there's no telling which the branches are in. The build
+        # goes on, and the next module still gets a place of its own.
+        data = bytearray(made_up_rel())
+        struct.pack_into(">I", data, 0x4c + 2 * 8, 0x200 | 1)  # Section 2 executable too.
+        unplaceable = modules.parse_module("rel", bytes(data))
+        with self.assertRaises(modules.Unsupported):
+            unplaceable.code_section()
+        count, placed, written, said = self.place([("two.rel", unplaceable), ("one.rel", modules.parse_module("rel", made_up_rel()))])
+        self.assertEqual(count, 1)
+        self.assertEqual([number for number, _, _ in placed], [1])
+        self.assertGreater(placed[0][1], emit.MODULE_BASE)
+        self.assertIn("left to the interpreter", said)
+        self.assertIn("&m1_module", written)
+        self.assertNotIn("m0_module", written)
+
+
+def lh_table(bits, entries, groups):
+    """One of LH's Huffman trees as lh_table reads it: a count of four-byte groups less one
+    (two bytes for 9-bit entries, one for 5-bit), then the entries packed from the high bit."""
+    count = struct.pack("<H", groups) if bits > 8 else bytes([groups])
+    room = (groups + 1) * 4 - len(count)
+    packed = 0
+    for entry in entries:
+        packed = packed << bits | entry
+    packed <<= room * 8 - bits * len(entries)
+    return count + packed.to_bytes(room, "big")
+
+
+def lh_stream(size, lengths, distances, bits):
+    return bytes([0x40]) + struct.pack("<I", size)[:3] + lh_table(9, lengths, 1) + lh_table(5, distances, 0) + bits
+
+
+# The root's two children are both leaves (0x100 for a 0 bit, 0x80 for a 1), at entries 2 and 3.
+LITERALS_A_B = [0x180, ord("a"), ord("b"), 0, 0]
+A_OR_COPY_OF_3 = [0x180, ord("a"), 0x100, 0, 0]  # A symbol of 0x100 or more copies (low byte + 3) bytes.
+DISTANCE_ONE = [0x18, 0, 0, 0]                    # Width 0 either way: one back.
+
+
+class LhCompression(unittest.TestCase):
+    """Nintendo's LZ with Huffman codes (type 0x40), as Mario Sports Mix's modules are kept."""
+
+    def test_literals(self):
+        packed = lh_stream(4, LITERALS_A_B, DISTANCE_ONE, bytes([0b01100000]))  # a b b a
+        self.assertEqual(modules.lh_decompress(packed), b"abba")
+        self.assertEqual(modules.decompress(packed), b"abba")
+
+    def test_a_copy_from_one_back(self):
+        packed = lh_stream(4, A_OR_COPY_OF_3, DISTANCE_ONE, bytes([0b01000000]))  # a, then three more from one back
+        self.assertEqual(modules.lh_decompress(packed), b"aaaa")
+
+    def test_what_isnt_one_is_refused(self):
+        good = lh_stream(4, LITERALS_A_B, DISTANCE_ONE, bytes([0b01100000]))
+        self.assertIsNone(modules.lh_decompress(b"\x10" + good[1:]))                        # Another type.
+        self.assertIsNone(modules.lh_decompress(good[:8]))                                  # Too short.
+        self.assertIsNone(modules.lh_decompress(b"\x40\0\0\0" + struct.pack("<I", 65 << 20) + good[4:]))  # Over the cap.
+        self.assertIsNone(modules.lh_decompress(lh_stream(4, A_OR_COPY_OF_3, DISTANCE_ONE, bytes([0b10000000]))))  # A copy with nothing before it.
+        self.assertIsNone(modules.lh_decompress(lh_stream(64, LITERALS_A_B, DISTANCE_ONE, bytes([0]))))  # Runs out.
+        self.assertEqual(modules.decompress(b"@ not compressed"), b"@ not compressed")
 
 
 if __name__ == "__main__":
