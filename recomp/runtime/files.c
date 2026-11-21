@@ -47,7 +47,10 @@ static const char *storage, *saves;
 
 void files_start(const char *folder) {
   storage = folder;
-  saves = getenv("WII_RECOMP_SAVES") ? getenv("WII_RECOMP_SAVES") : "recomp/build/saves";
+  // Empty counts as unset: every save path is this folder's name and a Wii path after it,
+  // so "" would put the console's files in the computer's own /shared2, /tmp and so on.
+  const char *chosen = getenv("WII_RECOMP_SAVES");
+  saves = chosen && *chosen ? chosen : "recomp/build/saves";
 }
 
 void files_save_path(const char *path, char *out, unsigned long size) { snprintf(out, size, "%s%s", saves, path); }

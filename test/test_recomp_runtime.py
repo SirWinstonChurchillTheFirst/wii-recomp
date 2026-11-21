@@ -137,11 +137,17 @@ class Runtime(unittest.TestCase):
         storage, saves = self.folder / "storage", self.folder / "saves"
         (storage / "shared2/wc24").mkdir(parents=True)
         (storage / "shared2/wc24/nwc24msg.cfg").write_bytes(b"WcCf" + bytes(0x3fc))
-        saves.mkdir()
+        (saves / "tmp/sys").mkdir(parents=True)  # Half a save a game was making when the power went.
+        (saves / "tmp/sys/partial").write_bytes(b"half")
+        (saves / "kept").write_text("beside /tmp")
         before = tree(storage)
         self.build_and_run([HERE / "c/test_system_files.c", RUNTIME / "system_files.c", RUNTIME / "fs.c",
                             RUNTIME / "files.c", RUNTIME / "gaps.c"], storage, saves)
         self.assertEqual(tree(storage), before)
+        # IOS empties /tmp as it starts, and only /tmp.
+        self.assertTrue((saves / "tmp").is_dir())
+        self.assertEqual(list((saves / "tmp").iterdir()), [])
+        self.assertEqual((saves / "kept").read_text(), "beside /tmp")
 
     def test_modules_loaded_at_run_time(self):
         sources = [HERE / "c/test_modules.c", RUNTIME / "dispatch.c", RUNTIME / "interp.c", RUNTIME / "quantized.c", RUNTIME / "profile.c"]
