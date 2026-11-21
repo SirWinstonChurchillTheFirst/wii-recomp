@@ -7,8 +7,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from test_recomp_replay import (HEIGHT, QUADS, RASTER_COLOR, SCALE, TEXTURE_BYTES, TEXTURE_COLOR, TRIANGLES, WIDTH, ZERO, base_state, bp_command, cp_command, draw,
-                                float_bits, program, replay, show_frame, vertex, write_dff)
+from test_recomp_replay import (HEIGHT, QUADS, RASTER_COLOR, SCALE, TEXTURE_COLOR, TRIANGLES, WIDTH, ZERO, base_state, bp_command, cp_command, draw,
+                                float_bits, replay, show_frame, vertex, write_dff)
 
 COLOR_R0, ALPHA_R0, COLOR_R1, ALPHA_R1, COLOR_R2, ALPHA_R2, COLOR_R3, ALPHA_R3 = range(8)
 TEXTURE_ALPHA, RASTER_ALPHA, COLOR_ONE, COLOR_HALF, KONST = 9, 11, 12, 13, 14

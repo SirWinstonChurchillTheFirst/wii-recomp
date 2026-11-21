@@ -4,6 +4,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -402,7 +403,8 @@ class CompareFrames(unittest.TestCase):
         picture.save(folder / name)
 
     def run_tool(self, *arguments):
-        return subprocess.run(["python3", str(COMPARE), str(self.a), str(self.b), *map(str, arguments)], capture_output=True, text=True)
+        # The Python running these tests, which has the Pillow the tool needs; "python3" may not.
+        return subprocess.run([sys.executable, str(COMPARE), str(self.a), str(self.b), *map(str, arguments)], capture_output=True, text=True)
 
     def test_same_frames_match(self):
         self.save(self.a, "frame-0000.png")

@@ -62,13 +62,11 @@ def build_backup(path, files, keys_at_end=True, spare=True):
     folders = {}
     for full, data in files.items():
         parts = full.split("/")
-        parent = 0
         for depth in range(len(parts) - 1):
             key = "/".join(parts[:depth + 1])
             if key not in folders:
                 folders[key] = (add_folder(parts[depth]), [])
                 (folders["/".join(parts[:depth])][1] if depth else root_children).append(folders[key][0])
-            parent = folders[key][0]
         index = add_file(parts[-1], data)
         (folders["/".join(parts[:-1])][1] if len(parts) > 1 else root_children).append(index)
     for number, children in folders.values():
