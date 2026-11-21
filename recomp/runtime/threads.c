@@ -18,6 +18,7 @@ enum {
 #define STATE_IN_EXCEPTION 2u
 
 #define MAX_CONTEXTS 256
+#define MAX_JUMPS 1024  // setjmp buffers, each kept like a context (guest_setjmp).
 #define HOST_STACK_BYTES (32u * 1024u * 1024u)
 #define GQR_BASE 912
 #define INTERRUPTS_ENABLED 0x8000u
@@ -59,12 +60,13 @@ typedef struct {
 } CallerRegisters;
 #endif
 
-typedef struct {
+typedef struct Slot {
   uint32_t guest;
   uint32_t resume_pc, resume_stack;
   volatile int resumed;
   void *stack;    // The host stack its code started on, freed when the slot starts again or goes to another context.
   uint64_t used;  // When it was last saved or loaded, by the count of both.
+  struct Slot *on;  // Whose host stack it was saved on (what was running then), 0 for the program's own.
   ucontext_t host;
 #ifdef RECORDS_CALLER
   CallerRegisters caller;
@@ -73,6 +75,7 @@ typedef struct {
 } Slot;
 
 static Slot slots[MAX_CONTEXTS];
+static Slot jump_slots[MAX_JUMPS];
 
 // The last few switches, printed when something goes wrong.
 #define HISTORY 24
@@ -94,6 +97,16 @@ static void print_history(void) {
 
 static Slot *running;  // Whose host stack the processor is on; 0 on the one the program started with.
 static uint64_t uses;
+
+// Whether a slot's host stack may still be needed: the processor is on it, or another
+// context was saved on it and may come back (a thread switched out inside a coroutine
+// that started there, say). Such a stack is kept, not freed, when its slot starts again.
+static int stack_in_use(const Slot *owner) {
+  if (owner == running) return 1;
+  for (int i = 0; i < MAX_CONTEXTS; i++) if (&slots[i] != owner && slots[i].guest && slots[i].on == owner) return 1;
+  for (int i = 0; i < MAX_JUMPS; i++) if (&jump_slots[i] != owner && jump_slots[i].guest && jump_slots[i].on == owner) return 1;
+  return 0;
+}
 
 static void free_stack(Slot *slot);
 
@@ -304,7 +317,7 @@ __attribute__((naked, noreturn)) static void start_on_stack(void *top, void *lim
 }
 
 static void free_stack(Slot *slot) {
-  if (slot->stack && slot != running) VirtualFree(slot->stack, 0, MEM_RELEASE);
+  if (slot->stack && !stack_in_use(slot)) VirtualFree(slot->stack, 0, MEM_RELEASE);
   slot->stack = 0;
 }
 
@@ -325,7 +338,7 @@ static void start_fresh(Slot *slot, uint32_t pc) {
 }
 #else
 static void free_stack(Slot *slot) {
-  if (slot->stack && slot != running) free(slot->stack);
+  if (slot->stack && !stack_in_use(slot)) free(slot->stack);
   slot->stack = 0;
 }
 
@@ -358,7 +371,7 @@ void load_context(void) {
   Slot *slot = slot_for(c);
   if (slot->resume_pc == pc && slot->resume_stack == cpu.r[1]) {
     slot->resumed = 1;
-    running = slot;
+    running = slot->on;
 #ifdef RECORDS_CALLER
     if (slot->use_caller) return_to_caller(&slot->caller);
 #endif
@@ -464,6 +477,7 @@ void save_context_recorded(const CallerRegisters *caller) {
   slot->resumed = 0;
   slot->caller = *caller;
   slot->use_caller = 1;
+  slot->on = running;
   cpu.r[3] = 0;
 }
 #else
@@ -479,6 +493,7 @@ void save_context(void) {
   slot->resume_pc = return_pc;
   slot->resume_stack = cpu.r[1];
   slot->resumed = 0;
+  slot->on = running;
   getcontext(&slot->host);
   if (slot->resumed) return;
   cpu.r[3] = 0;
@@ -496,11 +511,9 @@ void save_context(void) {
 // Two layouts are known: the C library's with paired singles (each of f14 to f31 in 16
 // bytes, the FPSCR at 384), and the plain one Hudson's engine keeps in Mario Party 8 (8 bytes
 // each, the FPSCR at 240). Both keep the rest where the other does.
-enum { JUMP_LR = 0, JUMP_CR = 4, JUMP_SP = 8, JUMP_R2 = 12, JUMP_R13 = 20, JUMP_FPR = 96, MAX_JUMPS = 1024 };
+enum { JUMP_LR = 0, JUMP_CR = 4, JUMP_SP = 8, JUMP_R2 = 12, JUMP_R13 = 20, JUMP_FPR = 96 };
 typedef struct { int fpr_stride, fpscr_at, paired; } JumpLayout;
 static const JumpLayout JUMP_PAIRED = {16, 384, 1}, JUMP_PLAIN = {8, 240, 0};
-static Slot jump_slots[MAX_JUMPS];
-
 static Slot *jump_slot_for(uint32_t buffer) {
   for (int i = 0; i < MAX_JUMPS; i++) {
     if (jump_slots[i].guest == buffer) return &jump_slots[i];
@@ -553,6 +566,7 @@ static void setjmp_recorded(const CallerRegisters *caller, const JumpLayout *lay
   slot->resume_stack = cpu.r[1];
   slot->caller = *caller;
   slot->use_caller = 1;
+  slot->on = running;
   cpu.r[3] = 0;
 }
 
@@ -562,7 +576,10 @@ static void longjmp_with(const JumpLayout *layout) {
   cpu.r[3] = value ? value : 1;
   record("longjmp", b, cpu.lr);
   Slot *slot = jump_slot_for(b);
-  if (slot->use_caller && slot->resume_pc == cpu.lr && slot->resume_stack == cpu.r[1]) return_to_caller(&slot->caller);
+  if (slot->use_caller && slot->resume_pc == cpu.lr && slot->resume_stack == cpu.r[1]) {
+    running = slot->on;
+    return_to_caller(&slot->caller);
+  }
   // Filled in by hand: the function in the link register starts on a stack of its own.
   slot->use_caller = 0;
   start_fresh(slot, cpu.lr);
@@ -592,6 +609,7 @@ void enter_exception(uint32_t kind, uint32_t handler) {
 #ifdef RECORDS_CALLER
   slot->use_caller = 0;
 #endif
+  slot->on = running;
   getcontext(&slot->host);
   if (slot->resumed) return;
   cpu.r[3] = kind;
